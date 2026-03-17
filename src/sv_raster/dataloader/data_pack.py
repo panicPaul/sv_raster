@@ -13,11 +13,11 @@ import numpy as np
 
 import torch
 
-from src.dataloader.reader_colmap_dataset import read_colmap_dataset
-from src.dataloader.reader_nerf_dataset import read_nerf_dataset
-from src.utils.camera_utils import interpolate_poses
+from sv_raster.dataloader.reader_colmap_dataset import read_colmap_dataset
+from sv_raster.dataloader.reader_nerf_dataset import read_nerf_dataset
+from sv_raster.utils.camera_utils import interpolate_poses
 
-from src.cameras import Camera, MiniCam
+from sv_raster.cameras import Camera, MiniCam
 
 
 class DataPack:

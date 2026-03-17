@@ -1,0 +1,109 @@
+[project]
+name = "sv_raster"
+version = "0.1.0"
+description = "SV Raster"
+authors = [{name = "Paul Schlack", email = "paul.schlack@me.com"}]
+requires-python = ">= 3.12"
+
+# --- PyPi dependencies ---
+dependencies = [
+    "ruff>=0.15.6,<0.16",
+    "ty>=0.0.23,<0.0.24",
+    "numpy>=2.3.5,<3",
+    "torch >= 2.0",
+    "pycolmap>=4.0.1,<5",
+    "pillow>=12.0.0,<13",
+    "einops>=0.8.2,<0.9",
+    "opencv-python>=4.13.0.92,<5",
+    "opencv-contrib-python>=4.13.0.92,<5",
+    "yacs>=0.1.8,<0.2",
+    "tqdm>=4.66.5,<5",
+    "argparse>=1.4.0,<2",
+    "imageio>=2.37.3,<3",
+    "imageio-ffmpeg>=0.6.0,<0.7",
+    "scikit-image>=0.26.0,<0.27",
+    "plyfile>=1.1.3,<2",
+    "shapely>=2.1.2,<3",
+    "trimesh>=4.11.3,<5",
+    "lpips>=0.1.4,<0.2",
+    "natsort>=8.4.0,<9",
+    "fused-ssim>=1.0.0,<2",
+    "setuptools>=70.2.0,<83",
+    "gpytoolbox>=0.3.0,<0.4",
+    "pytorch-msssim>=1.0.0,<2",
+    # TODO: find replacement for open3d
+]
+
+# --- build system ---
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+# --- uv specific ---
+[tool.uv]
+no-build-isolation-package = ["fused-ssim"]
+
+[tool.uv.sources]
+fused-ssim = { git = "https://github.com/rahul-goel/fused-ssim" }
+svraster_cuda = { path = "cuda" }
+
+
+# --- pixi specific ---
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+sv_raster = { path = ".", editable = true }
+svraster_cuda = { path = "cuda", editable = true } # use pixi reinstall for re-compilation
+
+[tool.pixi.pypi-options]
+no-build-isolation = ["fused-ssim"] # does not seem to be the same as uv's isolation for some reason
+
+# --- Python version features ---
+[tool.pixi.feature.py312.dependencies]
+python = "3.12.*"
+[tool.pixi.feature.py313.dependencies]
+python = "3.13.*"
+[tool.pixi.feature.py314.dependencies]
+python = "3.14.*"
+
+# --- CUDA version features ---
+[tool.pixi.feature.cuda128.dependencies]
+cuda-toolkit = ">=12.9.1,<13"
+cuda-nvcc = ">=12.9.86,<13"
+cuda-version = ">=12.9,<13"
+[tool.pixi.feature.cuda128.system-requirements]
+cuda = "12.8"
+[tool.pixi.feature.cuda128.activation.env]
+CUDA_HOME = "$CONDA_PREFIX"
+CUDA_PATH = "$CONDA_PREFIX"
+SVRASTER_CUDA_TAG = "cu128"
+[tool.pixi.feature.cuda130.dependencies]
+cuda-toolkit = ">=13.1.1,<14"
+cuda-nvcc = ">=13.1.115,<14"
+cuda-version = ">=13.1,<14"
+[tool.pixi.feature.cuda130.system-requirements]
+cuda = "13.0"
+[tool.pixi.feature.cuda130.activation.env]
+CUDA_HOME = "$CONDA_PREFIX"
+CUDA_PATH = "$CONDA_PREFIX"
+SVRASTER_CUDA_TAG = "cu130"
+
+[tool.pixi.feature.cuda130.pypi-options]
+extra-index-urls = ["https://download.pytorch.org/whl/cu130"]
+
+# --- Environments (compose Python × CUDA) ---
+[tool.pixi.environments]
+default = ["py313", "cuda128"]
+py312-cuda128 = ["py312", "cuda128"]
+py313-cuda128 = ["py313", "cuda128"]
+py314-cuda128 = ["py314", "cuda128"]
+
+py312-cuda130 = ["py312", "cuda130"]
+py313-cuda130 = ["py313", "cuda130"]
+py314-cuda130 = ["py314", "cuda130"]
+
+# --- Tasks ---
+[tool.pixi.tasks]
+compile_backend = "pixi reinstall svraster_cuda"

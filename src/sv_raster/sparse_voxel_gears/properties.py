@@ -8,9 +8,9 @@
 
 import torch
 
-from src.utils import octree_utils
-from src.utils.fuser_utils import rgb_fusion
-from src.utils.activation_utils import rgb2shzero
+from sv_raster.utils import octree_utils
+from sv_raster.utils.fuser_utils import rgb_fusion
+from sv_raster.utils.activation_utils import rgb2shzero
 
 import svraster_cuda
 

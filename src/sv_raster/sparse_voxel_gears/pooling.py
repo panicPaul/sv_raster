@@ -9,7 +9,7 @@
 import torch
 import svraster_cuda
 
-from src.utils import octree_utils
+from sv_raster.utils import octree_utils
 
 
 class SVPooling:
@@ -24,7 +24,7 @@ class SVPooling:
         octpack, invmap = torch.stack([octpath, octlevel]).unique(sorted=True, dim=1, return_inverse=True)
         octpath, octlevel = octpack
         octlevel = octlevel.to(torch.int8)
-        
+
         vox_center, vox_size = octree_utils.octpath_decoding(
             octpath, octlevel, self.scene_center, self.scene_extent)
 

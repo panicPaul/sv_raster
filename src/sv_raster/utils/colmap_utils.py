@@ -13,13 +13,13 @@ from typing import NamedTuple
 
 
 class PointCloud(NamedTuple):
-    points: np.array
-    colors: np.array
-    errors: np.array
+    points: np.ndarray
+    colors: np.ndarray
+    errors: np.ndarray
     corr: dict
 
 
-def parse_colmap_pts(sfm: pycolmap.Reconstruction, transform: np.array =None):
+def parse_colmap_pts(sfm: pycolmap.Reconstruction, transform: np.ndarray | None = None):
     """
     Parse COLMAP points and correspondents.
 

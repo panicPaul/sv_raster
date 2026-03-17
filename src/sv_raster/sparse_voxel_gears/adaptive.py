@@ -8,7 +8,7 @@
 
 import torch
 
-from src.utils import octree_utils
+from sv_raster.utils import octree_utils
 
 '''
 Adaptive sparse voxel pruning and subdivision.

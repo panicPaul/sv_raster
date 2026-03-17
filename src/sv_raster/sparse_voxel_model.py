@@ -6,12 +6,12 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-from src.sparse_voxel_gears.constructor import SVConstructor
-from src.sparse_voxel_gears.properties import SVProperties
-from src.sparse_voxel_gears.renderer import SVRenderer
-from src.sparse_voxel_gears.adaptive import SVAdaptive
-from src.sparse_voxel_gears.io import SVInOut
-from src.sparse_voxel_gears.pooling import SVPooling
+from sv_raster.sparse_voxel_gears.constructor import SVConstructor
+from sv_raster.sparse_voxel_gears.properties import SVProperties
+from sv_raster.sparse_voxel_gears.renderer import SVRenderer
+from sv_raster.sparse_voxel_gears.adaptive import SVAdaptive
+from sv_raster.sparse_voxel_gears.io import SVInOut
+from sv_raster.sparse_voxel_gears.pooling import SVPooling
 
 
 class SparseVoxelModel(SVConstructor, SVProperties, SVRenderer, SVAdaptive, SVInOut, SVPooling):

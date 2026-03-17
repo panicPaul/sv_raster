@@ -10,8 +10,8 @@ import torch
 import numpy as np
 import svraster_cuda
 
-from src.utils.activation_utils import rgb2shzero
-from src.utils import octree_utils
+from sv_raster.utils.activation_utils import rgb2shzero
+from sv_raster.utils import octree_utils
 
 class SVConstructor:
 

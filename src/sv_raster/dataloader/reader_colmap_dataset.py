@@ -15,8 +15,8 @@ from PIL import Image
 from pathlib import Path
 import concurrent.futures
 
-from src.utils.colmap_utils import parse_colmap_pts
-from src.utils.camera_utils import focal2fov
+from sv_raster.utils.colmap_utils import parse_colmap_pts
+from sv_raster.utils.camera_utils import focal2fov
 
 
 def read_colmap_dataset(source_path, image_dir_name, mask_dir_name, use_test, test_every, camera_creator):
@@ -58,6 +58,7 @@ def read_colmap_dataset(source_path, image_dir_name, mask_dir_name, use_test, te
         image = Image.open(image_path)
 
         # Load camera intrinsic
+        assert frame.camera is not None
         if frame.camera.model.name == "SIMPLE_PINHOLE":
             focal_x, cx, cy = frame.camera.params
             fovx = focal2fov(focal_x, frame.camera.width)

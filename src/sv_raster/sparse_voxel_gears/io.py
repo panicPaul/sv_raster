@@ -10,7 +10,7 @@ import os
 import re
 import torch
 
-from src.utils import octree_utils
+from sv_raster.utils import octree_utils
 
 class SVInOut:
 

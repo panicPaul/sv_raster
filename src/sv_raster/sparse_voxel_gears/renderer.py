@@ -9,7 +9,7 @@
 import torch
 import svraster_cuda
 
-from src.utils.image_utils import resize_rendering
+from sv_raster.utils.image_utils import resize_rendering
 
 class SVRenderer:
 

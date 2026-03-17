@@ -14,8 +14,8 @@ from PIL import Image
 from pathlib import Path
 import concurrent.futures
 
-from src.utils.colmap_utils import parse_colmap_pts
-from src.utils.camera_utils import fov2focal, focal2fov
+from sv_raster.utils.colmap_utils import parse_colmap_pts
+from sv_raster.utils.camera_utils import fov2focal, focal2fov
 
 
 def read_nerf_dataset(source_path, test_every, use_test, camera_creator):
