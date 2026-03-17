@@ -9,7 +9,7 @@ requires-python = ">= 3.12"
 dependencies = [
     "ruff>=0.15.6,<0.16",
     "ty>=0.0.23,<0.0.24",
-    "numpy>=2.3.5,<3",
+    "numpy",
     "torch >= 2.0",
     "pycolmap>=4.0.1,<5",
     "pillow>=12.0.0,<13",
@@ -29,9 +29,10 @@ dependencies = [
     "natsort>=8.4.0,<9",
     "fused-ssim>=1.0.0,<2",
     "setuptools>=70.2.0,<83",
-    "gpytoolbox>=0.3.0,<0.4",
     "pytorch-msssim>=1.0.0,<2",
-    # TODO: find replacement for open3d
+    "jaxtyping>=0.3.9,<0.4",
+    "marimo>=0.21.0,<0.22",
+    # TODO: find replacement for open3d, gpytoolbox (maybe just fork and update cmake version?)
 ]
 
 # --- build system ---
@@ -41,12 +42,15 @@ requires = ["hatchling"]
 
 # --- uv specific ---
 [tool.uv]
-no-build-isolation-package = ["fused-ssim"]
+no-build-isolation-package = ["fused-ssim", "gpytoolbox"]
 
 [tool.uv.sources]
 fused-ssim = { git = "https://github.com/rahul-goel/fused-ssim" }
 svraster_cuda = { path = "cuda" }
+gpytoolbox = { git = "https://github.com/sgsellan/gpytoolbox" }
 
+[tool.uv.extra-build-dependencies]
+gpytoolbox = ["setuptools"]
 
 # --- pixi specific ---
 [tool.pixi.workspace]
@@ -58,7 +62,7 @@ sv_raster = { path = ".", editable = true }
 svraster_cuda = { path = "cuda", editable = true } # use pixi reinstall for re-compilation
 
 [tool.pixi.pypi-options]
-no-build-isolation = ["fused-ssim"] # does not seem to be the same as uv's isolation for some reason
+no-build-isolation = ["fused-ssim", "gpytoolbox"] # does not seem to be the same as uv's isolation for some reason
 
 # --- Python version features ---
 [tool.pixi.feature.py312.dependencies]
@@ -104,6 +108,11 @@ py312-cuda130 = ["py312", "cuda130"]
 py313-cuda130 = ["py313", "cuda130"]
 py314-cuda130 = ["py314", "cuda130"]
 
+# --- Pixi Dependencies ---
+[tool.pixi.dependencies]
+
+
 # --- Tasks ---
 [tool.pixi.tasks]
 compile_backend = "pixi reinstall svraster_cuda"
+post_install = "pixi add --pypi gpytoolbox"
