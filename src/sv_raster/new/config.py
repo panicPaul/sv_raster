@@ -1,12 +1,15 @@
 from pathlib import Path
 
-import new_svraster_cuda
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pydantic_yaml import parse_yaml_file_as, to_yaml_str
 import yaml
 
+from sv_raster.new.backend import BackendName, get_backend_max_num_levels
+
 
 class ModelConfig(BaseModel):
+    # Raster backend used by this run and checkpoint.
+    backend: BackendName = "new_cuda"
     # Number of samples taken along each visited voxel segment during rasterization.
     n_samp_per_vox: int = 1
     # Maximum spherical-harmonics degree allocated for view-dependent color.
@@ -21,16 +24,15 @@ class ModelConfig(BaseModel):
     # fit the composite `[tile_id | order_rank]` key into one 64-bit word before the rasterizer needs 128-bit keys.
     max_num_levels: int = 16
 
-    @field_validator("max_num_levels")
-    @classmethod
-    def validate_max_num_levels(cls, value: int) -> int:
-        backend_max_num_levels = new_svraster_cuda.meta.MAX_NUM_LEVELS
-        if value > backend_max_num_levels:
+    @model_validator(mode="after")
+    def validate_backend_limits(self):
+        backend_max_num_levels = get_backend_max_num_levels(self.backend)
+        if self.max_num_levels > backend_max_num_levels:
             raise ValueError(
-                f"model.max_num_levels={value} exceeds the compiled new_cuda backend limit "
+                f"model.max_num_levels={self.max_num_levels} exceeds the compiled {self.backend} backend limit "
                 f"of {backend_max_num_levels}"
             )
-        return value
+        return self
 
 
 class DataConfig(BaseModel):

@@ -7,7 +7,6 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import torch
-import new_svraster_cuda
 
 from sv_raster.new.utils import octree_utils
 
@@ -18,7 +17,7 @@ class SVPooling:
         octpath = self.octpath if octpath is None else octpath
         octlevel = self.octlevel if octlevel is None else octlevel
 
-        num_bit_to_mask = 3 * max(0, new_svraster_cuda.meta.MAX_NUM_LEVELS - max_level)
+        num_bit_to_mask = 3 * max(0, self.backend.meta.MAX_NUM_LEVELS - max_level)
         octpath = (octpath >> num_bit_to_mask) << num_bit_to_mask
         octlevel = octlevel.clamp_max(max_level)
         octpack, invmap = torch.stack([octpath, octlevel]).unique(sorted=True, dim=1, return_inverse=True)
@@ -26,7 +25,7 @@ class SVPooling:
         octlevel = octlevel.to(torch.int8)
 
         vox_center, vox_size = octree_utils.octpath_decoding(
-            octpath, octlevel, self.scene_center, self.scene_extent)
+            octpath, octlevel, self.scene_center, self.scene_extent, backend_name=self.backend_name)
 
         return dict(
             invmap=invmap,
@@ -41,14 +40,15 @@ class SVPooling:
         octlevel = self.octlevel.clone() if octlevel is None else octlevel
         invmap = torch.arange(len(octpath), device="cuda")
 
-        for _ in range(new_svraster_cuda.meta.MAX_NUM_LEVELS):
-            vox_center, vox_size = octree_utils.octpath_decoding(octpath, octlevel, self.scene_center, self.scene_extent)
-            samp_rate = new_svraster_cuda.renderer.mark_max_samp_rate(cameras, octpath, vox_center, vox_size)
+        for _ in range(self.backend.meta.MAX_NUM_LEVELS):
+            vox_center, vox_size = octree_utils.octpath_decoding(
+                octpath, octlevel, self.scene_center, self.scene_extent, backend_name=self.backend_name)
+            samp_rate = self.backend.renderer.mark_max_samp_rate(cameras, octpath, vox_center, vox_size)
             pool_mask = (samp_rate < max_rate) & (octlevel.squeeze(1) > 1)
             if pool_mask.sum() == 0:
                 break
             octlevel[pool_mask] = octlevel[pool_mask] - 1
-            num_bit_to_mask = 3 * (new_svraster_cuda.meta.MAX_NUM_LEVELS - octlevel[pool_mask])
+            num_bit_to_mask = 3 * (self.backend.meta.MAX_NUM_LEVELS - octlevel[pool_mask])
             octpath[pool_mask] = octpath[pool_mask] >> num_bit_to_mask << num_bit_to_mask
 
             octpack, cur_invmap = torch.stack([octpath, octlevel]).unique(sorted=True, dim=1, return_inverse=True)
@@ -57,7 +57,7 @@ class SVPooling:
             invmap = cur_invmap[invmap]
 
         vox_center, vox_size = octree_utils.octpath_decoding(
-            octpath, octlevel, self.scene_center, self.scene_extent)
+            octpath, octlevel, self.scene_center, self.scene_extent, backend_name=self.backend_name)
 
         return dict(
             invmap=invmap,

@@ -31,6 +31,67 @@ namespace cg = cooperative_groups;
 
 namespace BACKWARD {
 
+__device__ inline float3 sh_eval_sample_cont(
+    const int deg,
+    const float3 dir,
+    const float3 base_rgb,
+    const float3* shs_val)
+{
+    const float SH_C0 = 0.28209479177387814f;
+    const float SH_C1 = 0.4886025119029199f;
+    const float SH_C2[] = {
+        1.0925484305920792f,
+        -1.0925484305920792f,
+        0.31539156525252005f,
+        -1.0925484305920792f,
+        0.5462742152960396f
+    };
+    const float SH_C3[] = {
+        -0.5900435899266435f,
+        2.890611442640554f,
+        -0.4570457994644658f,
+        0.3731763325901154f,
+        -0.4570457994644658f,
+        1.445305721320277f,
+        -0.5900435899266435f
+    };
+
+    float3 result = base_rgb;
+    if (deg > 0)
+    {
+        const float x = dir.x;
+        const float y = dir.y;
+        const float z = dir.z;
+        result = result - SH_C1 * y * shs_val[0] + SH_C1 * z * shs_val[1] - SH_C1 * x * shs_val[2];
+        if (deg > 1)
+        {
+            const float xx = x * x, yy = y * y, zz = z * z;
+            const float xy = x * y, yz = y * z, xz = x * z;
+            result = result +
+                SH_C2[0] * xy * shs_val[3] +
+                SH_C2[1] * yz * shs_val[4] +
+                SH_C2[2] * (2.0f * zz - xx - yy) * shs_val[5] +
+                SH_C2[3] * xz * shs_val[6] +
+                SH_C2[4] * (xx - yy) * shs_val[7];
+            if (deg > 2)
+            {
+                result = result +
+                    SH_C3[0] * y * (3.0f * xx - yy) * shs_val[8] +
+                    SH_C3[1] * xy * z * shs_val[9] +
+                    SH_C3[2] * y * (4.0f * zz - xx - yy) * shs_val[10] +
+                    SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * shs_val[11] +
+                    SH_C3[4] * x * (4.0f * zz - xx - yy) * shs_val[12] +
+                    SH_C3[5] * z * (xx - yy) * shs_val[13] +
+                    SH_C3[6] * x * (xx - 3.0f * yy) * shs_val[14];
+            }
+        }
+    }
+    result.x *= (result.x > 0.0f);
+    result.y *= (result.y > 0.0f);
+    result.z *= (result.z > 0.0f);
+    return result;
+}
+
 // CUDA backward pass of sparse voxel rendering.
 template <bool need_depth, bool need_distortion, bool need_normal,
           int n_samp>
@@ -770,5 +831,541 @@ rasterize_voxels_backward(
 
     return std::make_tuple(dL_dgeos, dL_drgbs, subdiv_p_bw);
 }
+
+__device__ inline void sh_bw_sample_cont(
+    const int deg,
+    const float3 dir,
+    const float3 dL_drgb,
+    float3& dL_dbase_rgb,
+    float3* dL_dshs)
+{
+    const float SH_C0 = 0.28209479177387814f;
+    const float SH_C1 = 0.4886025119029199f;
+    const float SH_C2[] = {
+        1.0925484305920792f,
+        -1.0925484305920792f,
+        0.31539156525252005f,
+        -1.0925484305920792f,
+        0.5462742152960396f
+    };
+    const float SH_C3[] = {
+        -0.5900435899266435f,
+        2.890611442640554f,
+        -0.4570457994644658f,
+        0.3731763325901154f,
+        -0.4570457994644658f,
+        1.445305721320277f,
+        -0.5900435899266435f
+    };
+
+    dL_dbase_rgb = dL_drgb;
+    if (deg > 0)
+    {
+        const float x = dir.x, y = dir.y, z = dir.z;
+        dL_dshs[0] = (-SH_C1 * y) * dL_drgb;
+        dL_dshs[1] = ( SH_C1 * z) * dL_drgb;
+        dL_dshs[2] = (-SH_C1 * x) * dL_drgb;
+        if (deg > 1)
+        {
+            const float xx = x * x, yy = y * y, zz = z * z;
+            const float xy = x * y, yz = y * z, xz = x * z;
+            dL_dshs[3] = SH_C2[0] * xy * dL_drgb;
+            dL_dshs[4] = SH_C2[1] * yz * dL_drgb;
+            dL_dshs[5] = SH_C2[2] * (2.f * zz - xx - yy) * dL_drgb;
+            dL_dshs[6] = SH_C2[3] * xz * dL_drgb;
+            dL_dshs[7] = SH_C2[4] * (xx - yy) * dL_drgb;
+            if (deg > 2)
+            {
+                dL_dshs[8]  = SH_C3[0] * y * (3.f * xx - yy) * dL_drgb;
+                dL_dshs[9]  = SH_C3[1] * xy * z * dL_drgb;
+                dL_dshs[10] = SH_C3[2] * y * (4.f * zz - xx - yy) * dL_drgb;
+                dL_dshs[11] = SH_C3[3] * z * (2.f * zz - 3.f * xx - 3.f * yy) * dL_drgb;
+                dL_dshs[12] = SH_C3[4] * x * (4.f * zz - xx - yy) * dL_drgb;
+                dL_dshs[13] = SH_C3[5] * z * (xx - yy) * dL_drgb;
+                dL_dshs[14] = SH_C3[6] * x * (xx - 3.f * yy) * dL_drgb;
+            }
+        }
+    }
+}
+
+template <bool need_depth, bool need_distortion, bool need_normal, int n_samp>
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+renderCUDA_cont_sh(
+    const uint2* __restrict__ ranges,
+    const uint32_t* __restrict__ vox_list,
+    const int W, const int H,
+    const float tan_fovx, const float tan_fovy,
+    const float cx, const float cy,
+    const float* __restrict__ c2w_matrix,
+    const float bg_color,
+    const uint2* __restrict__ bboxes,
+    const float3* __restrict__ vox_centers,
+    const float* __restrict__ vox_lengths,
+    const float* __restrict__ geos,
+    const float3* __restrict__ sh0,
+    const float3* __restrict__ rgbs,
+    const float* __restrict__ out_T,
+    const uint32_t* __restrict__ tile_last,
+    const uint32_t* __restrict__ n_contrib,
+    const float* __restrict__ dL_dout_color,
+    const float* __restrict__ dL_dout_depth,
+    const float* __restrict__ dL_dout_normal,
+    const float* __restrict__ dL_dout_T,
+    const float lambda_R_concen,
+    const float* gt_color,
+    const float lambda_ascending,
+    const float lambda_dist,
+    const float* out_D,
+    const float* out_N,
+    float* dL_dgeos,
+    float* dL_dsh0,
+    float* dL_drgbs,
+    float* subdiv_p_bw)
+{
+    auto block = cg::this_thread_block();
+    uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+    int thread_id = block.thread_rank();
+    int tile_id = block.group_index().y * horizontal_blocks + block.group_index().x;
+    uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+    uint2 pix;
+    uint32_t pix_id;
+    float2 pixf;
+    if (BLOCK_X % 8 == 0 && BLOCK_Y % 4 == 0)
+    {
+        int macro_x_num = BLOCK_X / 8;
+        int macro_id = thread_id / 32;
+        int macro_xid = macro_id % macro_x_num;
+        int macro_yid = macro_id / macro_x_num;
+        int micro_id = thread_id % 32;
+        int micro_xid = micro_id % 8;
+        int micro_yid = micro_id / 8;
+        pix = { pix_min.x + macro_xid * 8 + micro_xid, pix_min.y + macro_yid * 4 + micro_yid };
+        pix_id = W * pix.y + pix.x;
+        pixf = { (float)pix.x, (float)pix.y };
+    }
+    else
+    {
+        pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+        pix_id = W * pix.y + pix.x;
+        pixf = { (float)pix.x, (float)pix.y };
+    }
+
+    const float3 cam_rd = compute_ray_d(pixf, W, H, tan_fovx, tan_fovy, cx, cy);
+    const float rd_norm = sqrtf(dot(cam_rd, cam_rd));
+    const float rd_norm_inv = 1.f / rd_norm;
+    const float3 ro = last_col_3x4(c2w_matrix);
+    const float3 rd_raw = rotate_3x4(c2w_matrix, cam_rd);
+    const float3 rd = rd_raw * rd_norm_inv;
+    const float3 rd_inv = {1.f / rd.x, 1.f / rd.y, 1.f / rd.z};
+    uint32_t pix_quad_id = compute_ray_quadrant_id(rd);
+
+    bool inside = (pix.x < W) && (pix.y < H);
+    bool done = !inside;
+    const uint2 range_raw = ranges[tile_id];
+    const uint2 range = {range_raw.x, tile_last[tile_id]};
+    int toDo = range.y - range.x;
+    const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+
+    __shared__ int collected_vox_id[BLOCK_SIZE];
+    __shared__ int collected_quad_id[BLOCK_SIZE];
+    __shared__ uint2 collected_bbox[BLOCK_SIZE];
+    __shared__ float3 collected_vox_c[BLOCK_SIZE];
+    __shared__ float collected_vox_l[BLOCK_SIZE];
+    __shared__ float collected_geo_params[BLOCK_SIZE * 8];
+
+    const float T_final = inside ? out_T[pix_id] : 0.f;
+    float T = T_final;
+    uint32_t contributor = toDo;
+    const int last_contributor = inside ? n_contrib[pix_id] : 0;
+    float3 dL_dpix = {0.f, 0.f, 0.f};
+    float dL_dD = 0.f;
+    float3 dL_dN = {0.f, 0.f, 0.f};
+    float last_dL_dT = 0.f;
+    if (inside)
+    {
+        dL_dpix.x = dL_dout_color[0 * H * W + pix_id];
+        dL_dpix.y = dL_dout_color[1 * H * W + pix_id];
+        dL_dpix.z = dL_dout_color[2 * H * W + pix_id];
+        last_dL_dT = dL_dout_T[pix_id] + bg_color * (dL_dpix.x + dL_dpix.y + dL_dpix.z);
+        dL_dD = dL_dout_depth[pix_id] * rd_norm_inv;
+        dL_dN.x = dL_dout_normal[0 * H * W + pix_id];
+        dL_dN.y = dL_dout_normal[1 * H * W + pix_id];
+        dL_dN.z = dL_dout_normal[2 * H * W + pix_id];
+    }
+
+    const float WH_inv = 1.f / ((float)(W * H));
+    const float weight_R_concen = lambda_R_concen * WH_inv;
+    const float weight_ascending = lambda_ascending * WH_inv;
+    const float weight_dist = lambda_dist * WH_inv;
+    float3 gt_pix = {0.f, 0.f, 0.f};
+    if (lambda_R_concen > 0 && inside)
+    {
+        gt_pix.x = gt_color[0 * H * W + pix_id];
+        gt_pix.y = gt_color[1 * H * W + pix_id];
+        gt_pix.z = gt_color[2 * H * W + pix_id];
+    }
+    float3 pix_n = {0.f, 0.f, 0.f};
+    if (need_normal && inside)
+    {
+        pix_n.x = out_N[0 * H * W + pix_id];
+        pix_n.y = out_N[1 * H * W + pix_id];
+        pix_n.z = out_N[2 * H * W + pix_id];
+        pix_n = safe_rnorm(pix_n) * pix_n;
+    }
+    float prefix_wm = 0.f, suffix_wm = 0.f, prefix_w = 0.f, suffix_w = 0.f;
+    if (lambda_dist > 0 && inside)
+    {
+        prefix_wm = out_D[H * W + pix_id];
+        prefix_w = 1.f - T_final;
+    }
+
+    int j_lst[BLOCK_SIZE];
+
+    for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+    {
+        block.sync();
+        const int progress = i * BLOCK_SIZE + thread_id;
+        if (range.x + progress < range.y)
+        {
+            uint32_t order_val = vox_list[range.y - progress - 1];
+            uint32_t vox_id = decode_order_val_4_vox_id(order_val);
+            uint32_t quad_id = decode_order_val_4_quadrant_id(order_val);
+            collected_vox_id[thread_id] = vox_id;
+            collected_quad_id[thread_id] = quad_id;
+            collected_bbox[thread_id] = bboxes[vox_id];
+            collected_vox_c[thread_id] = vox_centers[vox_id];
+            collected_vox_l[thread_id] = vox_lengths[vox_id];
+            for (int k=0; k<8; ++k)
+                collected_geo_params[thread_id * 8 + k] = geos[vox_id * 8 + k];
+        }
+        block.sync();
+
+        const int end_j = min(BLOCK_SIZE, toDo);
+        int j_lst_top = -1;
+        for (int j = 0; !done && j < end_j; j++)
+        {
+            contributor--;
+            if (contributor >= last_contributor)
+                continue;
+            if (!pix_in_bbox(pix, collected_bbox[j]) || pix_quad_id != collected_quad_id[j])
+                continue;
+            const float2 ab = ray_aabb(collected_vox_c[j], collected_vox_l[j], ro, rd_inv);
+            if (ab.x > ab.y)
+                continue;
+            j_lst[++j_lst_top] = j;
+        }
+
+        for (int jj = 0; !done && jj <= j_lst_top; jj++)
+        {
+            int j = j_lst[jj];
+            const int vox_id = collected_vox_id[j];
+            const float3 vox_c = collected_vox_c[j];
+            const float vox_l = collected_vox_l[j];
+            const float2 ab = ray_aabb(vox_c, vox_l, ro, rd_inv);
+            const float a = ab.x;
+            const float b = ab.y;
+
+            float geo_params[8];
+            float dL_dgeo_params[8] = {0.f};
+            float3 dL_dsh0_params[8];
+            #pragma unroll
+            for (int iii=0; iii<8; ++iii)
+                dL_dsh0_params[iii] = {0.f, 0.f, 0.f};
+            for (int k=0; k<8; ++k)
+                geo_params[k] = collected_geo_params[j * 8 + k];
+
+            float vol_int = 0.f;
+            float dI_dgeo_params[8] = {0.f};
+            float each_dI_dgeo_params[n_samp][8];
+            float interp_ws[n_samp][8];
+            float local_alphas[n_samp];
+            float3 sample_colors[n_samp];
+            float vox_l_inv = 1.f / vox_l;
+            const float step_sz = (b - a) * (1.f / n_samp);
+            const float3 step = step_sz * rd;
+            float3 qt = (ro + (a + 0.5f * step_sz) * rd - (vox_c - 0.5f * vox_l)) * vox_l_inv;
+            const float3 qt_step = step * vox_l_inv;
+
+            #pragma unroll
+            for (int k=0; k<n_samp; k++, qt=qt+qt_step)
+            {
+                tri_interp_weight(qt, interp_ws[k]);
+                float d = 0.f;
+                for (int iii=0; iii<8; ++iii)
+                    d += geo_params[iii] * interp_ws[k][iii];
+                const float local_vol_int = STEP_SZ_SCALE * step_sz * exp_linear_11(d);
+                vol_int += local_vol_int;
+                local_alphas[k] = min(MAX_ALPHA, 1.f - expf(-local_vol_int));
+                const float dd_dd = STEP_SZ_SCALE * step_sz * exp_linear_11_bw(d);
+                for (int iii=0; iii<8; ++iii)
+                {
+                    float tmp = dd_dd * interp_ws[k][iii];
+                    dI_dgeo_params[iii] += tmp;
+                    each_dI_dgeo_params[k][iii] = tmp;
+                }
+                float3 interp_base_rgb = {0.f, 0.f, 0.f};
+                for (int iii=0; iii<8; ++iii)
+                {
+                    const float w = interp_ws[k][iii];
+                    interp_base_rgb = interp_base_rgb + w * sh0[vox_id * 8 + iii];
+                }
+                sample_colors[k] = interp_base_rgb + rgbs[vox_id];
+            }
+
+            const float exp_neg_vol_int = expf(-vol_int);
+            const float alpha = min(MAX_ALPHA, 1.f - exp_neg_vol_int);
+            if (alpha < MIN_ALPHA)
+                continue;
+
+            const float last_dL_dT_out = last_dL_dT;
+            float T_sample = T;
+            float last_dL_dT_color = last_dL_dT_out;
+            for (int k=n_samp-1; k>=0; --k)
+            {
+                const float alpha_k = local_alphas[k];
+                if (alpha_k < MIN_ALPHA)
+                    continue;
+                T_sample = T_sample / (1.f - alpha_k);
+                const float3 c_k = sample_colors[k];
+                const float color_dot = dot(dL_dpix, c_k);
+                const float dL_dalpha_k = T_sample * (color_dot - last_dL_dT_color);
+                last_dL_dT_color += alpha_k * (color_dot - last_dL_dT_color);
+
+                float3 dL_drgb = T_sample * alpha_k * dL_dpix;
+                if (lambda_R_concen > 0)
+                    dL_drgb = dL_drgb + weight_R_concen * T_sample * alpha_k * 2.f * (c_k - gt_pix);
+
+                const float3 dL_dinterp_base_rgb = dL_drgb;
+                for (int iii=0; iii<8; ++iii)
+                {
+                    const float w = interp_ws[k][iii];
+                    dL_dsh0_params[iii].x += w * dL_dinterp_base_rgb.x;
+                    dL_dsh0_params[iii].y += w * dL_dinterp_base_rgb.y;
+                    dL_dsh0_params[iii].z += w * dL_dinterp_base_rgb.z;
+                }
+                atomicAdd(dL_drgbs + (vox_id * 3 + 0), dL_drgb.x);
+                atomicAdd(dL_drgbs + (vox_id * 3 + 1), dL_drgb.y);
+                atomicAdd(dL_drgbs + (vox_id * 3 + 2), dL_drgb.z);
+                for (int iii=0; iii<8; ++iii)
+                    dL_dgeo_params[iii] += (dL_dalpha_k * (1.f - alpha_k)) * each_dI_dgeo_params[k][iii];
+            }
+
+            const float T_in = T_sample;
+            float dL_dpt_w = 0.f;
+            if (need_distortion)
+            {
+                float adist = depth_contracted(a), bdist = depth_contracted(b);
+                const float now_m = 0.5f * (adist + bdist);
+                const float now_wm = now_m * (T_in * alpha);
+                prefix_wm -= now_wm;
+                prefix_w -= T_in * alpha;
+                const float dist_grad_uni = 0.6666666f * (T_in * alpha) * (bdist - adist);
+                const float dist_grad_bi = 2.f * (now_m * (prefix_w - suffix_w) - (prefix_wm - suffix_wm));
+                dL_dpt_w += weight_dist * (dist_grad_uni + dist_grad_bi);
+                suffix_wm += now_wm;
+                suffix_w += T_in * alpha;
+            }
+            if (need_normal)
+            {
+                const float lin_nx = (
+                    (geo_params[0b100] + geo_params[0b101] + geo_params[0b110] + geo_params[0b111]) -
+                    (geo_params[0b000] + geo_params[0b001] + geo_params[0b010] + geo_params[0b011]));
+                const float lin_ny = (
+                    (geo_params[0b010] + geo_params[0b011] + geo_params[0b110] + geo_params[0b111]) -
+                    (geo_params[0b000] + geo_params[0b001] + geo_params[0b100] + geo_params[0b101]));
+                const float lin_nz = (
+                    (geo_params[0b001] + geo_params[0b011] + geo_params[0b101] + geo_params[0b111]) -
+                    (geo_params[0b000] + geo_params[0b010] + geo_params[0b100] + geo_params[0b110]));
+                const float3 lin_n = make_float3(lin_nx, lin_ny, lin_nz);
+                const float r_lin = safe_rnorm(lin_n);
+                const float3 surf_n = r_lin * lin_n;
+                dL_dpt_w += dot(dL_dN, surf_n);
+            }
+
+            const float dL_dI_other = (T_in * (dL_dpt_w - last_dL_dT_out)) * exp_neg_vol_int;
+            for (int iii=0; iii<8; ++iii)
+                dL_dgeo_params[iii] += dL_dI_other * dI_dgeo_params[iii];
+
+            if (need_depth)
+            {
+                float dval;
+                float dLdepth_dI[n_samp];
+                if (n_samp == 3)
+                {
+                    float a0 = local_alphas[0], a1 = local_alphas[1], a2 = local_alphas[2];
+                    float t0 = a + 0.5f * step_sz;
+                    float t1 = a + 1.5f * step_sz;
+                    float t2 = a + 2.5f * step_sz;
+                    dval = a0*t0 + (1.f-a0)*a1*t1 + (1.f-a0)*(1.f-a1)*a2*t2;
+                    dLdepth_dI[0] = dL_dD * T_in * (t0 + a1*a2*t2 - a1*t1 - a2*t2) * (1.f - a0);
+                    dLdepth_dI[1] = dL_dD * T_in * (t1 + a0*a2*t2 - a0*t1 - a2*t2) * (1.f - a1);
+                    dLdepth_dI[2] = dL_dD * T_in * (t2 + a0*a1*t2 - a0*t2 - a1*t2) * (1.f - a2);
+                }
+                else if (n_samp == 2)
+                {
+                    float a0 = local_alphas[0], a1 = local_alphas[1];
+                    float t0 = a + 0.5f * step_sz;
+                    float t1 = a + 1.5f * step_sz;
+                    dval = a0*t0 + (1.f-a0)*a1*t1;
+                    dLdepth_dI[0] = dL_dD * T_in * (t0 - a1*t1) * (1.f - a0);
+                    dLdepth_dI[1] = dL_dD * T_in * (t1 - a0*t1) * (1.f - a1);
+                }
+                else
+                {
+                    float t0 = 0.5f * (a + b);
+                    dval = alpha * t0;
+                    dLdepth_dI[0] = dL_dD * T_in * t0 * (1.f - alpha);
+                }
+                last_dL_dT = last_dL_dT_color + dL_dD * dval + alpha * (dL_dpt_w - last_dL_dT_out);
+                if (n_samp == 3)
+                    for (int iii=0; iii<8; ++iii)
+                        dL_dgeo_params[iii] += dLdepth_dI[0] * each_dI_dgeo_params[0][iii] + dLdepth_dI[1] * each_dI_dgeo_params[1][iii] + dLdepth_dI[2] * each_dI_dgeo_params[2][iii];
+                else if (n_samp == 2)
+                    for (int iii=0; iii<8; ++iii)
+                        dL_dgeo_params[iii] += dLdepth_dI[0] * each_dI_dgeo_params[0][iii] + dLdepth_dI[1] * each_dI_dgeo_params[1][iii];
+                else
+                    for (int iii=0; iii<8; ++iii)
+                        dL_dgeo_params[iii] += dLdepth_dI[0] * dI_dgeo_params[iii];
+            }
+            else
+            {
+                last_dL_dT = last_dL_dT_color + alpha * (dL_dpt_w - last_dL_dT_out);
+            }
+
+            if (lambda_ascending > 0)
+            {
+                const float3 qt_a = (ro + a * rd - (vox_c - 0.5f * vox_l)) * vox_l_inv;
+                const float3 qt_b = (ro + b * rd - (vox_c - 0.5f * vox_l)) * vox_l_inv;
+                float interp_w_a[8], interp_w_b[8];
+                tri_interp_weight(qt_a, interp_w_a);
+                tri_interp_weight(qt_b, interp_w_b);
+                float d_a = 0.f, d_b = 0.f;
+                for (int iii=0; iii<8; ++iii)
+                {
+                    d_a += geo_params[iii] * interp_w_a[iii];
+                    d_b += geo_params[iii] * interp_w_b[iii];
+                }
+                const float reg_w = weight_ascending * (T_in * alpha) * static_cast<float>(d_a > d_b);
+                for (int iii=0; iii<8; ++iii)
+                    dL_dgeo_params[iii] += reg_w * (interp_w_a[iii] - interp_w_b[iii]);
+            }
+
+            for (int iii=0; iii<8; ++iii)
+            {
+                atomicAdd(dL_dsh0 + (vox_id * 8 + iii) * 3 + 0, dL_dsh0_params[iii].x);
+                atomicAdd(dL_dsh0 + (vox_id * 8 + iii) * 3 + 1, dL_dsh0_params[iii].y);
+                atomicAdd(dL_dsh0 + (vox_id * 8 + iii) * 3 + 2, dL_dsh0_params[iii].z);
+                atomicAdd(dL_dgeos + vox_id * 8 + iii, dL_dgeo_params[iii]);
+            }
+            atomicAdd(subdiv_p_bw + vox_id, fabs((T_in * (0.f - last_dL_dT_out)) * alpha));
+        }
+    }
+}
+
+#define BW_CONT_CASE(ND, NDI, NN, NS) \
+    renderCUDA_cont_sh<ND, NDI, NN, NS><<<tile_grid, block>>>( \
+        imgState.ranges, binningState.vox_list, image_width, image_height, tan_fovx, tan_fovy, cx, cy, \
+        c2w_matrix.contiguous().data_ptr<float>(), bg_color, geomState.bboxes, \
+        (float3*)(vox_centers.contiguous().data_ptr<float>()), vox_lengths.contiguous().data_ptr<float>(), \
+        geos.contiguous().data_ptr<float>(), (float3*)(sh0.contiguous().data_ptr<float>()), (float3*)(rgbs.contiguous().data_ptr<float>()), \
+        out_T.contiguous().data_ptr<float>(), imgState.tile_last, imgState.n_contrib, \
+        dL_dout_color.contiguous().data_ptr<float>(), dL_dout_depth.contiguous().data_ptr<float>(), \
+        dL_dout_normal.contiguous().data_ptr<float>(), dL_dout_T.contiguous().data_ptr<float>(), \
+        lambda_R_concen, gt_color.contiguous().data_ptr<float>(), lambda_ascending, lambda_dist, \
+        out_D.contiguous().data_ptr<float>(), out_N.contiguous().data_ptr<float>(), \
+        dL_dgeos.contiguous().data_ptr<float>(), dL_dsh0.contiguous().data_ptr<float>(), dL_drgbs.contiguous().data_ptr<float>(), subdiv_p_bw.contiguous().data_ptr<float>())
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+rasterize_voxels_cont_sh_backward(
+    const int R,
+    const int n_samp_per_vox,
+    const int image_width, const int image_height,
+    const float tan_fovx, const float tan_fovy,
+    const float cx, const float cy,
+    const torch::Tensor& w2c_matrix,
+    const torch::Tensor& c2w_matrix,
+    const float bg_color,
+    const torch::Tensor& octree_paths,
+    const torch::Tensor& vox_centers,
+    const torch::Tensor& vox_lengths,
+    const torch::Tensor& geos,
+    const torch::Tensor& sh0,
+    const torch::Tensor& rgbs,
+    const torch::Tensor& geomBuffer,
+    const torch::Tensor& binningBuffer,
+    const torch::Tensor& imageBuffer,
+    const torch::Tensor& out_T,
+    const torch::Tensor& dL_dout_color,
+    const torch::Tensor& dL_dout_depth,
+    const torch::Tensor& dL_dout_normal,
+    const torch::Tensor& dL_dout_T,
+    const float lambda_R_concen,
+    const torch::Tensor& gt_color,
+    const float lambda_ascending,
+    const float lambda_dist,
+    const bool need_depth,
+    const bool need_normal,
+    const torch::Tensor& out_D,
+    const torch::Tensor& out_N,
+    const bool debug)
+{
+    const int P = vox_centers.size(0);
+    if (P == 0)
+        return std::make_tuple(torch::empty({0}), torch::empty({0}), torch::empty({0}), torch::empty({0}));
+
+    torch::Tensor dL_dgeos = torch::zeros_like(geos);
+    torch::Tensor dL_dsh0 = torch::zeros_like(sh0);
+    torch::Tensor dL_drgbs = torch::zeros_like(rgbs);
+    torch::Tensor subdiv_p_bw = torch::zeros({P, 1}, vox_centers.options());
+    dim3 tile_grid((image_width + BLOCK_X - 1) / BLOCK_X, (image_height + BLOCK_Y - 1) / BLOCK_Y, 1);
+    dim3 block(BLOCK_X, BLOCK_Y, 1);
+
+    char* geomB_ptr = reinterpret_cast<char*>(geomBuffer.contiguous().data_ptr());
+    char* binningB_ptr = reinterpret_cast<char*>(binningBuffer.contiguous().data_ptr());
+    char* imageB_ptr = reinterpret_cast<char*>(imageBuffer.contiguous().data_ptr());
+    RASTER_STATE::GeometryState geomState = RASTER_STATE::GeometryState::fromChunk(geomB_ptr, P);
+    const int total_key_bits = ORDER_RANK_BITS + required_bits_u32(tile_grid.x * tile_grid.y);
+    const bool use_wide_sort_key = total_key_bits > SINGLE_SORT_KEY_BITS;
+    RASTER_STATE::BinningState binningState = RASTER_STATE::BinningState::fromChunk(binningB_ptr, R, use_wide_sort_key);
+    RASTER_STATE::ImageState imgState = RASTER_STATE::ImageState::fromChunk(imageB_ptr, image_width * image_height, tile_grid.x * tile_grid.y);
+
+    if (n_samp_per_vox == 3)
+    {
+        if (need_depth && lambda_dist > 0 && need_normal) BW_CONT_CASE(true, true, true, 3);
+        else if (need_depth && lambda_dist > 0) BW_CONT_CASE(true, true, false, 3);
+        else if (need_depth && need_normal) BW_CONT_CASE(true, false, true, 3);
+        else if (need_depth) BW_CONT_CASE(true, false, false, 3);
+        else if (lambda_dist > 0 && need_normal) BW_CONT_CASE(false, true, true, 3);
+        else if (lambda_dist > 0) BW_CONT_CASE(false, true, false, 3);
+        else if (need_normal) BW_CONT_CASE(false, false, true, 3);
+        else BW_CONT_CASE(false, false, false, 3);
+    }
+    else if (n_samp_per_vox == 2)
+    {
+        if (need_depth && lambda_dist > 0 && need_normal) BW_CONT_CASE(true, true, true, 2);
+        else if (need_depth && lambda_dist > 0) BW_CONT_CASE(true, true, false, 2);
+        else if (need_depth && need_normal) BW_CONT_CASE(true, false, true, 2);
+        else if (need_depth) BW_CONT_CASE(true, false, false, 2);
+        else if (lambda_dist > 0 && need_normal) BW_CONT_CASE(false, true, true, 2);
+        else if (lambda_dist > 0) BW_CONT_CASE(false, true, false, 2);
+        else if (need_normal) BW_CONT_CASE(false, false, true, 2);
+        else BW_CONT_CASE(false, false, false, 2);
+    }
+    else
+    {
+        if (need_depth && lambda_dist > 0 && need_normal) BW_CONT_CASE(true, true, true, 1);
+        else if (need_depth && lambda_dist > 0) BW_CONT_CASE(true, true, false, 1);
+        else if (need_depth && need_normal) BW_CONT_CASE(true, false, true, 1);
+        else if (need_depth) BW_CONT_CASE(true, false, false, 1);
+        else if (lambda_dist > 0 && need_normal) BW_CONT_CASE(false, true, true, 1);
+        else if (lambda_dist > 0) BW_CONT_CASE(false, true, false, 1);
+        else if (need_normal) BW_CONT_CASE(false, false, true, 1);
+        else BW_CONT_CASE(false, false, false, 1);
+    }
+    CHECK_CUDA(debug);
+    return std::make_tuple(dL_dgeos, dL_dsh0, dL_drgbs, subdiv_p_bw);
+}
+
+#undef BW_CONT_CASE
 
 }

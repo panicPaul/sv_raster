@@ -878,4 +878,640 @@ rasterize_voxels(
     return std::make_tuple(rendered, binningBuffer, imgBuffer, out_color, out_depth, out_normal, out_T, max_w);
 }
 
+__device__ inline float3 sh_eval_sample_cont(
+    const int deg,
+    const float3 dir,
+    const float3 base_rgb,
+    const float3* shs_val)
+{
+    const float SH_C0 = 0.28209479177387814f;
+    const float SH_C1 = 0.4886025119029199f;
+    const float SH_C2[] = {
+        1.0925484305920792f,
+        -1.0925484305920792f,
+        0.31539156525252005f,
+        -1.0925484305920792f,
+        0.5462742152960396f
+    };
+    const float SH_C3[] = {
+        -0.5900435899266435f,
+        2.890611442640554f,
+        -0.4570457994644658f,
+        0.3731763325901154f,
+        -0.4570457994644658f,
+        1.445305721320277f,
+        -0.5900435899266435f
+    };
+
+    float3 result = base_rgb;
+    if (deg > 0)
+    {
+        const float x = dir.x;
+        const float y = dir.y;
+        const float z = dir.z;
+        result = result - SH_C1 * y * shs_val[0] + SH_C1 * z * shs_val[1] - SH_C1 * x * shs_val[2];
+        if (deg > 1)
+        {
+            const float xx = x * x, yy = y * y, zz = z * z;
+            const float xy = x * y, yz = y * z, xz = x * z;
+            result = result +
+                SH_C2[0] * xy * shs_val[3] +
+                SH_C2[1] * yz * shs_val[4] +
+                SH_C2[2] * (2.0f * zz - xx - yy) * shs_val[5] +
+                SH_C2[3] * xz * shs_val[6] +
+                SH_C2[4] * (xx - yy) * shs_val[7];
+            if (deg > 2)
+            {
+                result = result +
+                    SH_C3[0] * y * (3.0f * xx - yy) * shs_val[8] +
+                    SH_C3[1] * xy * z * shs_val[9] +
+                    SH_C3[2] * y * (4.0f * zz - xx - yy) * shs_val[10] +
+                    SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * shs_val[11] +
+                    SH_C3[4] * x * (4.0f * zz - xx - yy) * shs_val[12] +
+                    SH_C3[5] * z * (xx - yy) * shs_val[13] +
+                    SH_C3[6] * x * (xx - 3.0f * yy) * shs_val[14];
+            }
+        }
+    }
+    result.x *= (result.x > 0.0f);
+    result.y *= (result.y > 0.0f);
+    result.z *= (result.z > 0.0f);
+    return result;
+}
+
+template <bool need_depth, bool need_distortion, bool need_normal, bool track_max_w, int n_samp>
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+renderCUDA_cont_sh(
+    const uint2* __restrict__ ranges,
+    const uint32_t* __restrict__ vox_list,
+    int W, int H,
+    const float tan_fovx, const float tan_fovy,
+    const float cx, const float cy,
+    const float* __restrict__ c2w_matrix,
+    const float bg_color,
+    const uint2* __restrict__ bboxes,
+    const float3* __restrict__ vox_centers,
+    const float* __restrict__ vox_lengths,
+    const float* __restrict__ geos,
+    const float3* __restrict__ sh0,
+    const float3* __restrict__ rgbs,
+    uint32_t* __restrict__ tile_last,
+    uint32_t* __restrict__ n_contrib,
+    float* __restrict__ out_color,
+    float* __restrict__ out_depth,
+    float* __restrict__ out_normal,
+    float* __restrict__ out_T,
+    float* __restrict__ max_w)
+{
+    auto block = cg::this_thread_block();
+    uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+    int thread_id = block.thread_rank();
+    int tile_id = block.group_index().y * horizontal_blocks + block.group_index().x;
+    uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+
+    uint2 pix;
+    uint32_t pix_id;
+    float2 pixf;
+    if (BLOCK_X % 8 == 0 && BLOCK_Y % 4 == 0)
+    {
+        int macro_x_num = BLOCK_X / 8;
+        int macro_id = thread_id / 32;
+        int macro_xid = macro_id % macro_x_num;
+        int macro_yid = macro_id / macro_x_num;
+        int micro_id = thread_id % 32;
+        int micro_xid = micro_id % 8;
+        int micro_yid = micro_id / 8;
+        pix = { pix_min.x + macro_xid * 8 + micro_xid, pix_min.y + macro_yid * 4 + micro_yid };
+        pix_id = W * pix.y + pix.x;
+        pixf = { (float)pix.x, (float)pix.y };
+    }
+    else
+    {
+        pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+        pix_id = W * pix.y + pix.x;
+        pixf = { (float)pix.x, (float)pix.y };
+    }
+
+    const float3 cam_rd = compute_ray_d(pixf, W, H, tan_fovx, tan_fovy, cx, cy);
+    const float rd_norm = sqrtf(dot(cam_rd, cam_rd));
+    const float3 rd_raw = rotate_3x4(c2w_matrix, cam_rd);
+    const float rd_norm_inv = 1.f / rd_norm;
+    const float3 ro = last_col_3x4(c2w_matrix);
+    const float3 rd = rd_raw * rd_norm_inv;
+    const float3 rd_inv = {1.f / rd.x, 1.f / rd.y, 1.f / rd.z};
+    const uint32_t pix_quad_id = compute_ray_quadrant_id(rd);
+
+    bool inside = (pix.x < W) && (pix.y < H);
+    bool done = !inside;
+    uint2 range = ranges[tile_id];
+    const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    int toDo = range.y - range.x;
+    if (thread_id == 0)
+        tile_last[tile_id] = range.x;
+
+    __shared__ int collected_vox_id[BLOCK_SIZE];
+    __shared__ int collected_quad_id[BLOCK_SIZE];
+    __shared__ uint2 collected_bbox[BLOCK_SIZE];
+    __shared__ float3 collected_vox_c[BLOCK_SIZE];
+    __shared__ float collected_vox_l[BLOCK_SIZE];
+    __shared__ float collected_geo_params[BLOCK_SIZE * 8];
+
+    float T = 1.f;
+    uint32_t contributor = 0;
+    uint32_t last_contributor = 0;
+    float3 C = {0.f, 0.f, 0.f};
+    float3 N = {0.f, 0.f, 0.f};
+    float D = 0.f;
+    int D_med_vox_id = -1;
+    float D_med_T = 1.f;
+    float D_med = 0.f;
+    float Ddist = 0.f;
+    int j_lst[BLOCK_SIZE];
+
+    for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+    {
+        int num_done = __syncthreads_count(done);
+        if (num_done == BLOCK_SIZE)
+            break;
+        int progress = i * BLOCK_SIZE + thread_id;
+        if (range.x + progress < range.y)
+        {
+            uint32_t order_val = vox_list[range.x + progress];
+            uint32_t vox_id = decode_order_val_4_vox_id(order_val);
+            uint32_t quad_id = decode_order_val_4_quadrant_id(order_val);
+            collected_vox_id[thread_id] = vox_id;
+            collected_quad_id[thread_id] = quad_id;
+            collected_bbox[thread_id] = bboxes[vox_id];
+            collected_vox_c[thread_id] = vox_centers[vox_id];
+            collected_vox_l[thread_id] = vox_lengths[vox_id];
+            for (int k=0; k<8; ++k)
+                collected_geo_params[thread_id * 8 + k] = geos[vox_id * 8 + k];
+        }
+        block.sync();
+
+        const int end_j = min(BLOCK_SIZE, toDo);
+        int j_lst_top = -1;
+        for (int j = 0; !done && j < end_j; j++)
+        {
+            if (!pix_in_bbox(pix, collected_bbox[j]) || pix_quad_id != collected_quad_id[j])
+                continue;
+            const float2 ab = ray_aabb(collected_vox_c[j], collected_vox_l[j], ro, rd_inv);
+            if (ab.x > ab.y)
+                continue;
+            j_lst[++j_lst_top] = j;
+        }
+
+        int contributor_inc = 0;
+        for (int jj = 0; !done && jj <= j_lst_top; jj++)
+        {
+            int j = j_lst[jj];
+            const int vox_id = collected_vox_id[j];
+            contributor_inc = j + 1;
+            const float3 vox_c = collected_vox_c[j];
+            const float vox_l = collected_vox_l[j];
+            const float2 ab = ray_aabb(vox_c, vox_l, ro, rd_inv);
+            const float a = ab.x;
+            const float b = ab.y;
+
+            float geo_params[8];
+            for (int k=0; k<8; ++k)
+                geo_params[k] = collected_geo_params[j * 8 + k];
+
+            float interp_ws[n_samp][8];
+            float local_alphas[n_samp];
+            float3 sample_colors[n_samp];
+            float vol_int = 0.f;
+            float vox_l_inv = 1.f / vox_l;
+            const float step_sz = (b - a) * (1.f / n_samp);
+            const float3 step = step_sz * rd;
+            float3 qt = (ro + (a + 0.5f * step_sz) * rd - (vox_c - 0.5f * vox_l)) * vox_l_inv;
+            const float3 qt_step = step * vox_l_inv;
+
+            #pragma unroll
+            for (int k=0; k<n_samp; k++, qt=qt+qt_step)
+            {
+                tri_interp_weight(qt, interp_ws[k]);
+                float d = 0.f;
+                for (int iii=0; iii<8; ++iii)
+                    d += geo_params[iii] * interp_ws[k][iii];
+                const float local_vol_int = STEP_SZ_SCALE * step_sz * exp_linear_11(d);
+                vol_int += local_vol_int;
+                local_alphas[k] = min(MAX_ALPHA, 1.f - expf(-local_vol_int));
+
+                float3 interp_base_rgb = {0.f, 0.f, 0.f};
+                for (int iii=0; iii<8; ++iii)
+                {
+                    const float w = interp_ws[k][iii];
+                    interp_base_rgb = interp_base_rgb + w * sh0[vox_id * 8 + iii];
+                }
+                sample_colors[k] = interp_base_rgb + rgbs[vox_id];
+            }
+
+            const float alpha = min(MAX_ALPHA, 1.f - expf(-vol_int));
+            if (alpha < MIN_ALPHA)
+                continue;
+
+            float T_vox = 1.f;
+            #pragma unroll
+            for (int k=0; k<n_samp; ++k)
+            {
+                const float pt_w = T * T_vox * local_alphas[k];
+                C = C + pt_w * sample_colors[k];
+                T_vox *= (1.f - local_alphas[k]);
+            }
+            const float pt_w_vox = T * alpha;
+
+            if (need_depth)
+            {
+                float dval;
+                if (n_samp == 3)
+                {
+                    float a0 = local_alphas[0], a1 = local_alphas[1], a2 = local_alphas[2];
+                    float t0 = a + 0.5f * step_sz;
+                    float t1 = a + 1.5f * step_sz;
+                    float t2 = a + 2.5f * step_sz;
+                    dval = a0*t0 + (1.f-a0)*a1*t1 + (1.f-a0)*(1.f-a1)*a2*t2;
+                }
+                else if (n_samp == 2)
+                {
+                    float a0 = local_alphas[0], a1 = local_alphas[1];
+                    float t0 = a + 0.5f * step_sz;
+                    float t1 = a + 1.5f * step_sz;
+                    dval = a0*t0 + (1.f-a0)*a1*t1;
+                }
+                else
+                {
+                    dval = alpha * 0.5f * (a + b);
+                }
+                D = D + T * dval;
+                if (T > 0.5f)
+                {
+                    D_med_vox_id = vox_id;
+                    D_med_T = T;
+                }
+            }
+            if (need_distortion)
+                Ddist = Ddist + pt_w_vox * 0.5f * (depth_contracted(a) + depth_contracted(b));
+            if (need_normal)
+            {
+                const float lin_nx = (
+                    (geo_params[0b100] + geo_params[0b101] + geo_params[0b110] + geo_params[0b111]) -
+                    (geo_params[0b000] + geo_params[0b001] + geo_params[0b010] + geo_params[0b011]));
+                const float lin_ny = (
+                    (geo_params[0b010] + geo_params[0b011] + geo_params[0b110] + geo_params[0b111]) -
+                    (geo_params[0b000] + geo_params[0b001] + geo_params[0b100] + geo_params[0b101]));
+                const float lin_nz = (
+                    (geo_params[0b001] + geo_params[0b011] + geo_params[0b101] + geo_params[0b111]) -
+                    (geo_params[0b000] + geo_params[0b010] + geo_params[0b100] + geo_params[0b110]));
+                const float3 lin_n = make_float3(lin_nx, lin_ny, lin_nz);
+                N = N + pt_w_vox * safe_rnorm(lin_n) * lin_n;
+            }
+
+            T *= (1.f - alpha);
+            done |= (T < EARLY_STOP_T);
+            last_contributor = contributor + contributor_inc;
+            if (track_max_w)
+                atomicMax(((int*)max_w) + vox_id, *((int*)(&pt_w_vox)));
+        }
+	        contributor += done ? contributor_inc : end_j;
+	    }
+
+	    if (need_depth && inside && D_med_vox_id != -1)
+	    {
+	        // Match new_cuda: refine the median depth inside the median voxel.
+	        const int n_samp_dmed = 16;
+
+	        float3 vox_c = vox_centers[D_med_vox_id];
+	        float vox_l = vox_lengths[D_med_vox_id];
+	        float geo_params[8];
+	        for (int k=0; k<8; ++k)
+	            geo_params[k] = geos[D_med_vox_id * 8 + k];
+	        const float2 ab = ray_aabb(vox_c, vox_l, ro, rd_inv);
+	        const float a = ab.x;
+	        const float b = ab.y;
+
+	        float vox_l_inv = 1.f / vox_l;
+	        const float step_sz = (b - a) * (1.f / n_samp_dmed);
+	        const float3 step = step_sz * rd;
+	        float3 pt = ro + (a + 0.5f * step_sz) * rd;
+	        float3 qt = (pt - (vox_c - 0.5f * vox_l)) * vox_l_inv;
+	        const float3 qt_step = step * vox_l_inv;
+
+	        D_med = a - 0.5f * step_sz;
+	        for (int k=0; k<n_samp_dmed && D_med_T > 0.5f; k++, qt=qt+qt_step)
+	        {
+	            D_med += step_sz;
+
+	            float interp_w[8];
+	            tri_interp_weight(qt, interp_w);
+	            float d = 0.f;
+	            for (int iii=0; iii<8; ++iii)
+	                d += geo_params[iii] * interp_w[iii];
+
+	            const float vol_int = STEP_SZ_SCALE * step_sz * exp_linear_11(d);
+	            D_med_T *= expf(-vol_int);
+	        }
+	    }
+
+	    if (inside)
+	    {
+	        n_contrib[pix_id] = last_contributor;
+        out_color[0 * H * W + pix_id] = C.x + T * bg_color;
+        out_color[1 * H * W + pix_id] = C.y + T * bg_color;
+        out_color[2 * H * W + pix_id] = C.z + T * bg_color;
+        out_T[pix_id] = T;
+        if (need_depth)
+        {
+            out_depth[pix_id] = D * rd_norm_inv;
+            out_depth[H * W * 2 + pix_id] = D_med * rd_norm_inv;
+        }
+        if (need_distortion)
+            out_depth[H * W + pix_id] = Ddist;
+        if (need_normal)
+        {
+            out_normal[0 * H * W + pix_id] = N.x;
+            out_normal[1 * H * W + pix_id] = N.y;
+            out_normal[2 * H * W + pix_id] = N.z;
+        }
+        atomicMax(tile_last + tile_id, range.x + last_contributor);
+    }
+}
+
+#define FW_CONT_CASE(ND, NDI, NN, TMW, NS) \
+    renderCUDA_cont_sh<ND, NDI, NN, TMW, NS><<<tile_grid, block>>>( \
+        ranges, vox_list, W, H, tan_fovx, tan_fovy, cx, cy, c2w_matrix, bg_color, \
+        bboxes, vox_centers, vox_lengths, geos, sh0, rgbs, tile_last, n_contrib, out_color, out_depth, out_normal, out_T, max_w)
+
+void render_cont_sh(
+    const dim3 tile_grid, const dim3 block,
+    const uint2* ranges,
+    const uint32_t* vox_list,
+    const int n_samp_per_vox,
+    int W, int H,
+    const float tan_fovx, const float tan_fovy,
+    const float cx, const float cy,
+    const float* c2w_matrix,
+    const float bg_color,
+    const bool need_depth,
+    const bool need_distortion,
+    const bool need_normal,
+    const uint2* bboxes,
+    const float3* vox_centers,
+    const float* vox_lengths,
+    const float* geos,
+    const float3* sh0,
+    const float3* rgbs,
+    uint32_t* tile_last,
+    uint32_t* n_contrib,
+    float* out_color,
+    float* out_depth,
+    float* out_normal,
+    float* out_T,
+    float* max_w)
+{
+    const bool track_max_w = (max_w != nullptr);
+    if (n_samp_per_vox == 3)
+    {
+        if (need_depth && need_distortion && need_normal && track_max_w) FW_CONT_CASE(true, true, true, true, 3);
+        else if (need_depth && need_distortion && need_normal) FW_CONT_CASE(true, true, true, false, 3);
+        else if (need_depth && need_distortion && track_max_w) FW_CONT_CASE(true, true, false, true, 3);
+        else if (need_depth && need_distortion) FW_CONT_CASE(true, true, false, false, 3);
+        else if (need_depth && need_normal && track_max_w) FW_CONT_CASE(true, false, true, true, 3);
+        else if (need_depth && need_normal) FW_CONT_CASE(true, false, true, false, 3);
+        else if (need_depth && track_max_w) FW_CONT_CASE(true, false, false, true, 3);
+        else if (need_depth) FW_CONT_CASE(true, false, false, false, 3);
+        else if (need_distortion && need_normal && track_max_w) FW_CONT_CASE(false, true, true, true, 3);
+        else if (need_distortion && need_normal) FW_CONT_CASE(false, true, true, false, 3);
+        else if (need_distortion && track_max_w) FW_CONT_CASE(false, true, false, true, 3);
+        else if (need_distortion) FW_CONT_CASE(false, true, false, false, 3);
+        else if (need_normal && track_max_w) FW_CONT_CASE(false, false, true, true, 3);
+        else if (need_normal) FW_CONT_CASE(false, false, true, false, 3);
+        else if (track_max_w) FW_CONT_CASE(false, false, false, true, 3);
+        else FW_CONT_CASE(false, false, false, false, 3);
+    }
+    else if (n_samp_per_vox == 2)
+    {
+        if (need_depth && need_distortion && need_normal && track_max_w) FW_CONT_CASE(true, true, true, true, 2);
+        else if (need_depth && need_distortion && need_normal) FW_CONT_CASE(true, true, true, false, 2);
+        else if (need_depth && need_distortion && track_max_w) FW_CONT_CASE(true, true, false, true, 2);
+        else if (need_depth && need_distortion) FW_CONT_CASE(true, true, false, false, 2);
+        else if (need_depth && need_normal && track_max_w) FW_CONT_CASE(true, false, true, true, 2);
+        else if (need_depth && need_normal) FW_CONT_CASE(true, false, true, false, 2);
+        else if (need_depth && track_max_w) FW_CONT_CASE(true, false, false, true, 2);
+        else if (need_depth) FW_CONT_CASE(true, false, false, false, 2);
+        else if (need_distortion && need_normal && track_max_w) FW_CONT_CASE(false, true, true, true, 2);
+        else if (need_distortion && need_normal) FW_CONT_CASE(false, true, true, false, 2);
+        else if (need_distortion && track_max_w) FW_CONT_CASE(false, true, false, true, 2);
+        else if (need_distortion) FW_CONT_CASE(false, true, false, false, 2);
+        else if (need_normal && track_max_w) FW_CONT_CASE(false, false, true, true, 2);
+        else if (need_normal) FW_CONT_CASE(false, false, true, false, 2);
+        else if (track_max_w) FW_CONT_CASE(false, false, false, true, 2);
+        else FW_CONT_CASE(false, false, false, false, 2);
+    }
+    else
+    {
+        if (need_depth && need_distortion && need_normal && track_max_w) FW_CONT_CASE(true, true, true, true, 1);
+        else if (need_depth && need_distortion && need_normal) FW_CONT_CASE(true, true, true, false, 1);
+        else if (need_depth && need_distortion && track_max_w) FW_CONT_CASE(true, true, false, true, 1);
+        else if (need_depth && need_distortion) FW_CONT_CASE(true, true, false, false, 1);
+        else if (need_depth && need_normal && track_max_w) FW_CONT_CASE(true, false, true, true, 1);
+        else if (need_depth && need_normal) FW_CONT_CASE(true, false, true, false, 1);
+        else if (need_depth && track_max_w) FW_CONT_CASE(true, false, false, true, 1);
+        else if (need_depth) FW_CONT_CASE(true, false, false, false, 1);
+        else if (need_distortion && need_normal && track_max_w) FW_CONT_CASE(false, true, true, true, 1);
+        else if (need_distortion && need_normal) FW_CONT_CASE(false, true, true, false, 1);
+        else if (need_distortion && track_max_w) FW_CONT_CASE(false, true, false, true, 1);
+        else if (need_distortion) FW_CONT_CASE(false, true, false, false, 1);
+        else if (need_normal && track_max_w) FW_CONT_CASE(false, false, true, true, 1);
+        else if (need_normal) FW_CONT_CASE(false, false, true, false, 1);
+        else if (track_max_w) FW_CONT_CASE(false, false, false, true, 1);
+        else FW_CONT_CASE(false, false, false, false, 1);
+    }
+}
+
+template <typename KeyT>
+int rasterize_voxels_cont_sh_procedure(
+    char* geom_buffer,
+    std::function<char* (size_t)> binningBuffer,
+    std::function<char* (size_t)> imageBuffer,
+    const int P,
+    const int n_samp_per_vox,
+    const int width, const int height,
+    const float tan_fovx, const float tan_fovy,
+    const float cx, float cy,
+    const float* w2c_matrix,
+    const float* c2w_matrix,
+    const float bg_color,
+    const bool need_depth,
+    const bool need_distortion,
+    const bool need_normal,
+    const int64_t* octree_paths,
+    const float* vox_centers,
+    const float* vox_lengths,
+    const float* geos,
+    const float* sh0,
+    const float* rgbs,
+    float* out_color,
+    float* out_depth,
+    float* out_normal,
+    float* out_T,
+    float* max_w,
+    bool debug)
+{
+    dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
+    dim3 block(BLOCK_X, BLOCK_Y, 1);
+    RASTER_STATE::GeometryState geomState = RASTER_STATE::GeometryState::fromChunk(geom_buffer, P);
+    char* img_chunkptr = imageBuffer(RASTER_STATE::required<RASTER_STATE::ImageState>(width * height, tile_grid.x * tile_grid.y));
+    RASTER_STATE::ImageState imgState = RASTER_STATE::ImageState::fromChunk(img_chunkptr, width * height, tile_grid.x * tile_grid.y);
+    cub::DeviceScan::InclusiveSum(
+        geomState.scanning_temp_space,
+        geomState.scan_size,
+        geomState.n_duplicates,
+        geomState.n_duplicates_scan,
+        P);
+    CHECK_CUDA(debug);
+
+    int num_rendered;
+    cudaMemcpy(&num_rendered, geomState.n_duplicates_scan + P - 1, sizeof(int), cudaMemcpyDeviceToHost);
+    CHECK_CUDA(debug);
+
+    const uint32_t tile_count = tile_grid.x * tile_grid.y;
+    const int total_key_bits = ORDER_RANK_BITS + getHigherMsb(tile_count);
+    const bool use_wide_sort_key = total_key_bits > SINGLE_SORT_KEY_BITS;
+    char* binning_chunkptr = binningBuffer(RASTER_STATE::required_binning_state(num_rendered, use_wide_sort_key));
+    RASTER_STATE::BinningState binningState =
+        RASTER_STATE::BinningState::fromChunk(binning_chunkptr, num_rendered, use_wide_sort_key);
+
+    if constexpr (std::is_same_v<KeyT, SortKey128>)
+    {
+        duplicateWithKeys<SortKey128> <<<(P + 255) / 256, 256>>>(
+            P, octree_paths, geomState.bboxes, geomState.cam_quadrant_bitsets, geomState.n_duplicates,
+            geomState.n_duplicates_scan, binningState.vox_list_keys_unsorted_wide, binningState.vox_list_unsorted, tile_grid);
+        cub::DeviceRadixSort::SortPairs(
+            binningState.list_sorting_space,
+            binningState.sorting_size,
+            binningState.vox_list_keys_unsorted_wide, binningState.vox_list_keys_wide,
+            binningState.vox_list_unsorted, binningState.vox_list,
+            num_rendered, SortKey128Decomposer{}, 0, total_key_bits);
+        CHECK_CUDA(debug);
+        cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2));
+        if (num_rendered > 0)
+            identifyTileRanges<SortKey128> <<<(num_rendered + 255) / 256, 256>>>(num_rendered, binningState.vox_list_keys_wide, imgState.ranges);
+    }
+    else
+    {
+        duplicateWithKeys<uint64_t> <<<(P + 255) / 256, 256>>>(
+            P, octree_paths, geomState.bboxes, geomState.cam_quadrant_bitsets, geomState.n_duplicates,
+            geomState.n_duplicates_scan, binningState.vox_list_keys_unsorted, binningState.vox_list_unsorted, tile_grid);
+        cub::DeviceRadixSort::SortPairs(
+            binningState.list_sorting_space,
+            binningState.sorting_size,
+            binningState.vox_list_keys_unsorted, binningState.vox_list_keys,
+            binningState.vox_list_unsorted, binningState.vox_list,
+            num_rendered, 0, total_key_bits);
+        CHECK_CUDA(debug);
+        cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2));
+        if (num_rendered > 0)
+            identifyTileRanges<uint64_t> <<<(num_rendered + 255) / 256, 256>>>(num_rendered, binningState.vox_list_keys, imgState.ranges);
+    }
+    CHECK_CUDA(debug);
+
+    render_cont_sh(
+        tile_grid, block,
+        imgState.ranges,
+        binningState.vox_list,
+        n_samp_per_vox,
+        width, height,
+        tan_fovx, tan_fovy,
+        cx, cy,
+        c2w_matrix,
+        bg_color,
+        need_depth,
+        need_distortion,
+        need_normal,
+        geomState.bboxes,
+        (float3*)vox_centers,
+        vox_lengths,
+        geos,
+        (float3*)sh0,
+        (float3*)rgbs,
+        imgState.tile_last,
+        imgState.n_contrib,
+        out_color,
+        out_depth,
+        out_normal,
+        out_T,
+        max_w);
+    CHECK_CUDA(debug);
+    return num_rendered;
+}
+
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+rasterize_voxels_cont_sh(
+    const int n_samp_per_vox,
+    const int image_width, const int image_height,
+    const float tan_fovx, const float tan_fovy,
+    const float cx, const float cy,
+    const torch::Tensor& w2c_matrix,
+    const torch::Tensor& c2w_matrix,
+    const float bg_color,
+    const bool need_depth,
+    const bool need_distortion,
+    const bool need_normal,
+    const bool track_max_w,
+    const torch::Tensor& octree_paths,
+    const torch::Tensor& vox_centers,
+    const torch::Tensor& vox_lengths,
+    const torch::Tensor& geos,
+    const torch::Tensor& sh0,
+    const torch::Tensor& rgbs,
+    const torch::Tensor& geomBuffer,
+    const bool debug)
+{
+    const int P = vox_centers.size(0);
+    const int H = image_height;
+    const int W = image_width;
+    auto float_opts = torch::TensorOptions(torch::kFloat32).device(torch::kCUDA);
+    auto byte_opts = torch::TensorOptions(torch::kByte).device(torch::kCUDA);
+    torch::Tensor out_color = torch::full({3, H, W}, 0.f, float_opts);
+    torch::Tensor out_depth = need_depth || need_distortion ? torch::full({3, H, W}, 0.f, float_opts) : torch::empty({0});
+    torch::Tensor out_normal = need_normal ? torch::full({3, H, W}, 0.f, float_opts) : torch::empty({0});
+    torch::Tensor out_T = torch::full({1, H, W}, 0.f, float_opts);
+    torch::Tensor max_w = track_max_w ? torch::full({P, 1}, 0.f, float_opts) : torch::empty({0});
+    torch::Tensor binningBuffer = torch::empty({0}, byte_opts);
+    torch::Tensor imgBuffer = torch::empty({0}, byte_opts);
+    std::function<char*(size_t)> binningFunc = RASTER_STATE::resizeFunctional(binningBuffer);
+    std::function<char*(size_t)> imgFunc = RASTER_STATE::resizeFunctional(imgBuffer);
+    float* max_w_ptr = track_max_w ? max_w.contiguous().data_ptr<float>() : nullptr;
+    int rendered = 0;
+    if (P != 0)
+    {
+        const uint32_t tile_count = ((W + BLOCK_X - 1) / BLOCK_X) * ((H + BLOCK_Y - 1) / BLOCK_Y);
+        const int total_key_bits = ORDER_RANK_BITS + getHigherMsb(tile_count);
+        if (total_key_bits > SINGLE_SORT_KEY_BITS)
+            rendered = rasterize_voxels_cont_sh_procedure<SortKey128>(
+                reinterpret_cast<char*>(geomBuffer.contiguous().data_ptr()), binningFunc, imgFunc,
+                P, n_samp_per_vox, W, H, tan_fovx, tan_fovy, cx, cy,
+                w2c_matrix.contiguous().data_ptr<float>(), c2w_matrix.contiguous().data_ptr<float>(), bg_color,
+                need_depth, need_distortion, need_normal, octree_paths.contiguous().data_ptr<int64_t>(),
+                vox_centers.contiguous().data_ptr<float>(), vox_lengths.contiguous().data_ptr<float>(),
+                geos.contiguous().data_ptr<float>(), sh0.contiguous().data_ptr<float>(), rgbs.contiguous().data_ptr<float>(),
+                out_color.contiguous().data_ptr<float>(), out_depth.contiguous().data_ptr<float>(),
+                out_normal.contiguous().data_ptr<float>(), out_T.contiguous().data_ptr<float>(), max_w_ptr, debug);
+        else
+            rendered = rasterize_voxels_cont_sh_procedure<uint64_t>(
+                reinterpret_cast<char*>(geomBuffer.contiguous().data_ptr()), binningFunc, imgFunc,
+                P, n_samp_per_vox, W, H, tan_fovx, tan_fovy, cx, cy,
+                w2c_matrix.contiguous().data_ptr<float>(), c2w_matrix.contiguous().data_ptr<float>(), bg_color,
+                need_depth, need_distortion, need_normal, octree_paths.contiguous().data_ptr<int64_t>(),
+                vox_centers.contiguous().data_ptr<float>(), vox_lengths.contiguous().data_ptr<float>(),
+                geos.contiguous().data_ptr<float>(), sh0.contiguous().data_ptr<float>(), rgbs.contiguous().data_ptr<float>(),
+                out_color.contiguous().data_ptr<float>(), out_depth.contiguous().data_ptr<float>(),
+                out_normal.contiguous().data_ptr<float>(), out_T.contiguous().data_ptr<float>(), max_w_ptr, debug);
+    }
+    return std::make_tuple(rendered, binningBuffer, imgBuffer, out_color, out_depth, out_normal, out_T, max_w);
+}
+
+#undef FW_CONT_CASE
+
 }

@@ -105,6 +105,51 @@ __device__ float3 computeColorFromSH(
     return result;
 }
 
+template <int deg>
+__device__ float3 computeResidualFromSH(
+    int idx, int max_coeffs, const float3 vox_c, const float3 ro,
+    const float3* shs)
+{
+    float3 dir = vox_c - ro;
+    dir = dir * rnorm3df(dir.x, dir.y, dir.z);
+
+    const float3* sh = shs + idx * (max_coeffs - 1);
+    float3 result = {0.f, 0.f, 0.f};
+
+    if (deg > 0)
+    {
+        float x = dir.x;
+        float y = dir.y;
+        float z = dir.z;
+        result = result - SH_C1 * y * sh[0] + SH_C1 * z * sh[1] - SH_C1 * x * sh[2];
+
+        if (deg > 1)
+        {
+            float xx = x * x, yy = y * y, zz = z * z;
+            float xy = x * y, yz = y * z, xz = x * z;
+            result = result +
+                SH_C2[0] * xy * sh[3] +
+                SH_C2[1] * yz * sh[4] +
+                SH_C2[2] * (2.0f * zz - xx - yy) * sh[5] +
+                SH_C2[3] * xz * sh[6] +
+                SH_C2[4] * (xx - yy) * sh[7];
+
+            if (deg > 2)
+            {
+                result = result +
+                    SH_C3[0] * y * (3.0f * xx - yy) * sh[8] +
+                    SH_C3[1] * xy * z * sh[9] +
+                    SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[10] +
+                    SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[11] +
+                    SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[12] +
+                    SH_C3[5] * z * (xx - yy) * sh[13] +
+                    SH_C3[6] * x * (xx - 3.0f * yy) * sh[14];
+            }
+        }
+    }
+    return result;
+}
+
 
 // Backward pass for spherical harmonics to RGB.
 template <int deg>
@@ -175,6 +220,49 @@ __device__ void computeColorFromSH_bw(
     }
 }
 
+template <int deg>
+__device__ void computeResidualFromSH_bw(
+    int idx, int max_coeffs, const float3 vox_c, const float3 ro,
+    float3 dL_drgb, float3* dL_dshs)
+{
+    float3 dir = vox_c - ro;
+    dir = dir * rnorm3df(dir.x, dir.y, dir.z);
+
+    float3* dL_dsh = dL_dshs + idx * (max_coeffs - 1);
+    if (deg > 0)
+    {
+        float x = dir.x;
+        float y = dir.y;
+        float z = dir.z;
+        dL_dsh[0] = (-SH_C1 * y) * dL_drgb;
+        dL_dsh[1] = ( SH_C1 * z) * dL_drgb;
+        dL_dsh[2] = (-SH_C1 * x) * dL_drgb;
+
+        if (deg > 1)
+        {
+            float xx = x * x, yy = y * y, zz = z * z;
+            float xy = x * y, yz = y * z, xz = x * z;
+
+            dL_dsh[3] = SH_C2[0] * xy * dL_drgb;
+            dL_dsh[4] = SH_C2[1] * yz * dL_drgb;
+            dL_dsh[5] = SH_C2[2] * (2.f * zz - xx - yy) * dL_drgb;
+            dL_dsh[6] = SH_C2[3] * xz * dL_drgb;
+            dL_dsh[7] = SH_C2[4] * (xx - yy) * dL_drgb;
+
+            if (deg > 2)
+            {
+                dL_dsh[8] = SH_C3[0] * y * (3.f * xx - yy) * dL_drgb;
+                dL_dsh[9] = SH_C3[1] * xy * z * dL_drgb;
+                dL_dsh[10] = SH_C3[2] * y * (4.f * zz - xx - yy) * dL_drgb;
+                dL_dsh[11] = SH_C3[3] * z * (2.f * zz - 3.f * xx - 3.f * yy) * dL_drgb;
+                dL_dsh[12] = SH_C3[4] * x * (4.f * zz - xx - yy) * dL_drgb;
+                dL_dsh[13] = SH_C3[5] * z * (xx - yy) * dL_drgb;
+                dL_dsh[14] = SH_C3[6] * x * (xx - 3.f * yy) * dL_drgb;
+            }
+        }
+    }
+}
+
 
 // Compute rgb from spherical harmonic.
 __global__ void sh_compute_cuda(
@@ -205,6 +293,53 @@ __global__ void sh_compute_cuda(
 
     // Write back the results.
     rgbs[idx] = sh_result;
+}
+
+__global__ void sh_compute_residual_cuda(
+    const int N, const int n_vox, const int D, const int M,
+    const int64_t* __restrict__ indices,
+    const float3* __restrict__ vox_centers,
+    const float3* __restrict__ cam_pos,
+    const float3* __restrict__ shs,
+    float3* __restrict__ rgbs)
+{
+    auto tid = cg::this_grid().thread_rank();
+    if ((N == 0 && tid >= n_vox) || (N != 0 && tid >= N))
+        return;
+    const int idx = (N != 0) ? indices[tid] : tid;
+    const float3 vox_c = vox_centers[idx];
+    const float3 ro = *(cam_pos);
+
+    auto sh_eval =
+        (D == 0) ? computeResidualFromSH<0> :
+        (D == 1) ? computeResidualFromSH<1> :
+        (D == 2) ? computeResidualFromSH<2> :
+                   computeResidualFromSH<3>;
+    rgbs[idx] = sh_eval(idx, M, vox_c, ro, shs);
+}
+
+__global__ void sh_compute_residual_bw_cuda(
+    const int N, const int n_vox, const int D, const int M,
+    const int64_t* __restrict__ indices,
+    const float3* __restrict__ vox_centers,
+    const float3* __restrict__ cam_pos,
+    const float3* __restrict__ dL_drgbs,
+    float3* __restrict__ dL_dshs)
+{
+    auto tid = cg::this_grid().thread_rank();
+    if ((N == 0 && tid >= n_vox) || (N != 0 && tid >= N))
+        return;
+    const int idx = (N != 0) ? indices[tid] : tid;
+    const float3 vox_c = vox_centers[idx];
+    const float3 ro = *(cam_pos);
+    const float3 dL_drgb = dL_drgbs[idx];
+
+    auto sh_eval =
+        (D == 0) ? computeResidualFromSH_bw<0> :
+        (D == 1) ? computeResidualFromSH_bw<1> :
+        (D == 2) ? computeResidualFromSH_bw<2> :
+                   computeResidualFromSH_bw<3>;
+    sh_eval(idx, M, vox_c, ro, dL_drgb, dL_dshs);
 }
 
 
@@ -296,6 +431,53 @@ std::tuple<torch::Tensor, torch::Tensor> sh_compute_bw(
             (float3*)dL_dshs.contiguous().data_ptr<float>());
 
     return std::make_tuple(dL_dsh0, dL_dshs);
+}
+
+torch::Tensor sh_compute_residual(
+    const int D,
+    const torch::Tensor& indices,
+    const torch::Tensor& vox_centers,
+    const torch::Tensor& cam_pos,
+    const torch::Tensor& shs)
+{
+    const int P = vox_centers.size(0);
+    const int N = indices.size(0);
+    const int M = 1 + shs.size(1);
+    torch::Tensor rgbs = torch::zeros({P, 3}, vox_centers.options());
+    const int total_threads = N != 0 ? N : P;
+
+    if (P > 0)
+        sh_compute_residual_cuda<<<(total_threads + 255) / 256, 256>>>(
+            N, P, D, M,
+            indices.contiguous().data_ptr<int64_t>(),
+            (float3*)vox_centers.contiguous().data_ptr<float>(),
+            (float3*)cam_pos.contiguous().data_ptr<float>(),
+            (float3*)shs.contiguous().data_ptr<float>(),
+            (float3*)rgbs.contiguous().data_ptr<float>());
+    return rgbs;
+}
+
+torch::Tensor sh_compute_residual_bw(
+    const int D, const int M,
+    const torch::Tensor& indices,
+    const torch::Tensor& vox_centers,
+    const torch::Tensor& cam_pos,
+    const torch::Tensor& dL_drgbs)
+{
+    const int P = vox_centers.size(0);
+    const int N = indices.size(0);
+    torch::Tensor dL_dshs = torch::zeros({P, M - 1, 3}, vox_centers.options());
+    const int total_threads = N != 0 ? N : P;
+
+    if (P > 0)
+        sh_compute_residual_bw_cuda<<<(total_threads + 255) / 256, 256>>>(
+            N, P, D, M,
+            indices.contiguous().data_ptr<int64_t>(),
+            (float3*)vox_centers.contiguous().data_ptr<float>(),
+            (float3*)cam_pos.contiguous().data_ptr<float>(),
+            (float3*)dL_drgbs.contiguous().data_ptr<float>(),
+            (float3*)dL_dshs.contiguous().data_ptr<float>());
+    return dL_dshs;
 }
 
 }

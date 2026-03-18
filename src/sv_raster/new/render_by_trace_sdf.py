@@ -60,7 +60,7 @@ def render_set(name, iteration, suffix, args, views, voxel_model):
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         hit_depth, hit_vox_id = voxel_model.render_trace_sdf(view)
         if not args.eval_fps:
-            rendering = voxel_model._sh0[hit_vox_id].moveaxis(-1, 0)
+            rendering = voxel_model.sh0[hit_vox_id].moveaxis(-1, 0)
             rendering *= (hit_vox_id != -1)
             gt = view.image.cuda()
             mse = (rendering.clip(0,1) - gt.clip(0,1)).square().mean()
@@ -121,6 +121,7 @@ if __name__ == "__main__":
         res_downscale=cfg.data.res_downscale,
         res_width=cfg.data.res_width,
         max_render_ss=max(cfg.model.ss, args.overwrite_ss or 0),
+        backend_name=cfg.model.backend,
         skip_blend_alpha=cfg.data.skip_blend_alpha,
         alpha_is_white=cfg.model.white_background,
         data_device=cfg.data.data_device,
@@ -131,6 +132,7 @@ if __name__ == "__main__":
 
     # Load model
     voxel_model = SparseVoxelModel(
+        backend=cfg.model.backend,
         n_samp_per_vox=cfg.model.n_samp_per_vox,
         sh_degree=cfg.model.sh_degree,
         ss=cfg.model.ss,
@@ -175,8 +177,11 @@ if __name__ == "__main__":
         volume.integrate(cam=cam, feat=cam.image.cuda(), depth=median_depth)
 
     voxel_model._shs.data.fill_(0)
-    voxel_model._sh0.data.copy_(
-        volume.feature.nan_to_num_()[voxel_model.vox_key].mean(dim=1))
+    if voxel_model.color_is_grid:
+        voxel_model._sh0.data.copy_(volume.feature.nan_to_num_())
+    else:
+        voxel_model._sh0.data.copy_(
+            volume.feature.nan_to_num_()[voxel_model.vox_key].mean(dim=1))
     voxel_model._geo_grid_pts.data.copy_(
         volume.tsdf.nan_to_num_())
 

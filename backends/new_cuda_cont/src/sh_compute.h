@@ -32,6 +32,20 @@ std::tuple<torch::Tensor, torch::Tensor> sh_compute_bw(
     const torch::Tensor& rgbs,
     const torch::Tensor& dL_drgbs);
 
+torch::Tensor sh_compute_residual(
+    const int D,
+    const torch::Tensor& idx,
+    const torch::Tensor& vox_centers,
+    const torch::Tensor& cam_pos,
+    const torch::Tensor& shs);
+
+torch::Tensor sh_compute_residual_bw(
+    const int D, const int M,
+    const torch::Tensor& idx,
+    const torch::Tensor& vox_centers,
+    const torch::Tensor& cam_pos,
+    const torch::Tensor& dL_drgbs);
+
 }
 
 #endif

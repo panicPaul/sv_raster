@@ -12,8 +12,6 @@ from sv_raster.new.utils import octree_utils
 from sv_raster.new.utils.fuser_utils import rgb_fusion
 from sv_raster.new.utils.activation_utils import rgb2shzero
 
-import new_svraster_cuda
-
 
 class SVProperties:
 
@@ -56,6 +54,8 @@ class SVProperties:
 
     @property
     def sh0(self):
+        if self.color_is_grid:
+            return rgb2shzero(self._sh0[self.vox_key].mean(dim=1))
         return self._sh0
 
     @property
@@ -81,8 +81,9 @@ class SVProperties:
                          self._check_derived_voxel_attr_signature != signature
         if need_recompute:
             self._vox_center, self._vox_size = octree_utils.octpath_decoding(
-                self.octpath, self.octlevel, self.scene_center, self.scene_extent)
-            self._grid_pts_key, self._vox_key = octree_utils.build_grid_pts_link(self.octpath, self.octlevel)
+                self.octpath, self.octlevel, self.scene_center, self.scene_extent, backend_name=self.backend_name)
+            self._grid_pts_key, self._vox_key = octree_utils.build_grid_pts_link(
+                self.octpath, self.octlevel, backend_name=self.backend_name)
             self._check_derived_voxel_attr_signature = signature
 
     @property
@@ -124,19 +125,32 @@ class SVProperties:
                          self._grid_pts_xyz_signature != signature
         if need_recompute:
             self._grid_pts_xyz = octree_utils.compute_gridpoints_xyz(
-                self.grid_pts_key, self.scene_center, self.scene_extent)
+                self.grid_pts_key, self.scene_center, self.scene_extent, backend_name=self.backend_name)
             self._grid_pts_xyz_signature = signature
         return self._grid_pts_xyz
 
     @torch.no_grad()
     def reset_sh_from_cameras(self, cameras):
-        self._sh0.data.copy_(rgb2shzero(rgb_fusion(self, cameras)))
-        self._shs.data.zero_()
+        rgb = rgb_fusion(self, cameras)
+        if self.color_is_grid:
+            sh0_vox = rgb[:, None, :].expand(-1, 8, -1)
+            self._sh0.data.zero_()
+            self._sh0.data.index_reduce_(
+                dim=0,
+                index=self.vox_key.flatten(),
+                source=sh0_vox.flatten(0, 1),
+                reduce="mean",
+                include_self=False,
+            )
+            self._shs.data.zero_()
+        else:
+            self._sh0.data.copy_(rgb2shzero(rgb))
+            self._shs.data.zero_()
 
     def apply_tv_on_density_field(self, lambda_tv_density):
         if self._geo_grid_pts.grad is None:
             self._geo_grid_pts.grad = torch.zeros_like(self._geo_grid_pts.data)
-        new_svraster_cuda.grid_loss_bw.total_variation(
+        self.backend.grid_loss_bw.total_variation(
             grid_pts=self._geo_grid_pts,
             vox_key=self.vox_key,
             weight=lambda_tv_density,

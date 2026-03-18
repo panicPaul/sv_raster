@@ -1,8 +1,7 @@
-import new_svraster_cuda
+from sv_raster.new.backend import BackendName, get_backend_max_render_tiles
 
 
 TILE_SIZE = 16
-MAX_NUM_TILES = new_svraster_cuda.meta.MAX_RENDER_TILES
 
 
 def compute_target_image_size(width, height, res_downscale=0.0, res_width=0):
@@ -18,7 +17,16 @@ def compute_target_image_size(width, height, res_downscale=0.0, res_width=0):
     return target_width, target_height
 
 
-def validate_camera_resolution(width, height, res_downscale=0.0, res_width=0, max_render_ss=1.0, image_name=""):
+def validate_camera_resolution(
+    width,
+    height,
+    res_downscale=0.0,
+    res_width=0,
+    max_render_ss=1.0,
+    image_name="",
+    backend_name: BackendName = "new_cuda",
+):
+    max_num_tiles = get_backend_max_render_tiles(backend_name)
     target_width, target_height = compute_target_image_size(
         width=width,
         height=height,
@@ -30,12 +38,12 @@ def validate_camera_resolution(width, height, res_downscale=0.0, res_width=0, ma
     n_tiles_x = (render_width + TILE_SIZE - 1) // TILE_SIZE
     n_tiles_y = (render_height + TILE_SIZE - 1) // TILE_SIZE
     n_tiles = n_tiles_x * n_tiles_y
-    if n_tiles > MAX_NUM_TILES:
+    if n_tiles > max_num_tiles:
         image_desc = f" for '{image_name}'" if image_name else ""
         raise ValueError(
             f"Target render resolution {render_height}x{render_width}{image_desc} requires "
             f"{n_tiles} tiles of size {TILE_SIZE}x{TILE_SIZE}, exceeding the renderer "
-            f"limit of {MAX_NUM_TILES}. Increase --res_downscale, lower --res_width, "
-            f"reduce supersampling, or rebuild `new_cuda` with a larger packed image limit."
+            f"limit of {max_num_tiles}. Increase --res_downscale, lower --res_width, "
+            f"reduce supersampling, or rebuild `{backend_name}` with a larger packed image limit."
         )
     return target_width, target_height

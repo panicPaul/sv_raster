@@ -13,6 +13,7 @@ import numpy as np
 
 import torch
 
+from sv_raster.new.backend import BackendName
 from sv_raster.new.dataloader.reader_colmap_dataset import read_colmap_dataset
 from sv_raster.new.dataloader.reader_nerf_dataset import read_nerf_dataset
 from sv_raster.new.utils.camera_utils import interpolate_poses
@@ -29,6 +30,7 @@ class DataPack:
                  res_downscale=0.,
                  res_width=0,
                  max_render_ss=1.0,
+                 backend_name: BackendName = "new_cuda",
                  skip_blend_alpha=False,
                  alpha_is_white=False,
                  data_device="cpu",
@@ -40,6 +42,7 @@ class DataPack:
             res_downscale=res_downscale,
             res_width=res_width,
             max_render_ss=max_render_ss,
+            backend_name=backend_name,
             skip_blend_alpha=skip_blend_alpha,
             alpha_is_white=alpha_is_white,
             data_device=data_device,
@@ -153,6 +156,7 @@ class CameraCreator:
                  res_downscale=0.,
                  res_width=0,
                  max_render_ss=1.0,
+                 backend_name: BackendName = "new_cuda",
                  skip_blend_alpha=False,
                  alpha_is_white=False,
                  data_device="cpu",
@@ -161,6 +165,7 @@ class CameraCreator:
         self.res_downscale = res_downscale
         self.res_width = res_width
         self.max_render_ss = max_render_ss
+        self.backend_name = backend_name
         self.skip_blend_alpha = skip_blend_alpha
         self.alpha_is_white = alpha_is_white
         self.data_device = data_device

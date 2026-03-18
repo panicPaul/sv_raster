@@ -64,6 +64,7 @@ def read_colmap_dataset(source_path, image_dir_name, mask_dir_name, use_test, te
             res_width=camera_creator.res_width,
             max_render_ss=camera_creator.max_render_ss,
             image_name=image_path.name,
+            backend_name=camera_creator.backend_name,
         )
         image = Image.open(image_path)
 

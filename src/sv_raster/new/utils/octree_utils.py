@@ -7,8 +7,15 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import torch
-import new_svraster_cuda
-from new_svraster_cuda.meta import MAX_NUM_LEVELS
+
+from sv_raster.new.backend import BackendName, get_backend_max_num_levels, get_backend_module
+
+DEFAULT_BACKEND: BackendName = "new_cuda"
+
+
+def get_max_num_levels(backend_name: BackendName = DEFAULT_BACKEND) -> int:
+    return get_backend_max_num_levels(backend_name)
+
 
 '''
 Define many low-level functions for the sparse voxels under Octree layout.
@@ -29,7 +36,7 @@ subtree_shift_int64 = torch.tensor([
 subtree_shift = subtree_shift_int64.float()
 
 
-def octpath_sanity_check(octpath, octlevel):
+def octpath_sanity_check(octpath, octlevel, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     Sanity check if the given pvoxel (octpath, octleve) is valid.
 
@@ -38,10 +45,11 @@ def octpath_sanity_check(octpath, octlevel):
         @octlevel: [N, 1]
     '''
     assert octlevel.min() >= 1, 'Minimum level should be larger than 1.'
-    assert octlevel.max() <= MAX_NUM_LEVELS, 'Maximum level out of bound.'
+    max_num_levels = get_max_num_levels(backend_name)
+    assert octlevel.max() <= max_num_levels, 'Maximum level out of bound.'
     assert len(octpath) == len(octlevel), 'Size mismatch.'
-    for lv in range(1, 1+MAX_NUM_LEVELS):
-        bit_shift = 3 * (MAX_NUM_LEVELS-lv)
+    for lv in range(1, 1 + max_num_levels):
+        bit_shift = 3 * (max_num_levels - lv)
         lv_mask = 0b111 << bit_shift
         subtree_id = (octpath & lv_mask) >> bit_shift
         assert ((lv <= octlevel) | (subtree_id == 0)).all(), \
@@ -69,7 +77,7 @@ def vox_size_2_level(scene_extent, vox_size):
     '''
     return -torch.log2(vox_size / scene_extent)
 
-def xyz_2_octpath(xyz, octlevel, scene_center, scene_extent):
+def xyz_2_octpath(xyz, octlevel, scene_center, scene_extent, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     Compute the voxels' octpath containing the input xyz.
 
@@ -92,11 +100,11 @@ def xyz_2_octpath(xyz, octlevel, scene_center, scene_extent):
         raise Exception("xyz out of scene bound")
     if (ijk >= (1 << octlevel.long())).any():
         raise Exception("xyz out of scene bound")
-    octpath = new_svraster_cuda.utils.ijk_2_octpath(ijk, octlevel)
+    octpath = get_backend_module(backend_name).utils.ijk_2_octpath(ijk, octlevel)
     return octpath
 
 
-def octpath_decoding(octpath, octlevel, scene_center, scene_extent):
+def octpath_decoding(octpath, octlevel, scene_center, scene_extent, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     Compute world-space voxel center positions and voxel size.
 
@@ -110,7 +118,7 @@ def octpath_decoding(octpath, octlevel, scene_center, scene_extent):
         @vox_size:      [N, 1] float tensor
     '''
     # Sanity check
-    octpath_sanity_check(octpath, octlevel)
+    octpath_sanity_check(octpath, octlevel, backend_name=backend_name)
 
     # Ensure trailing dim
     octpath = octpath.reshape(-1, 1)
@@ -121,12 +129,12 @@ def octpath_decoding(octpath, octlevel, scene_center, scene_extent):
 
     vox_size = level_2_vox_size(scene_extent, octlevel)
 
-    vox_ijk = new_svraster_cuda.utils.octpath_2_ijk(octpath, octlevel)
+    vox_ijk = get_backend_module(backend_name).utils.octpath_2_ijk(octpath, octlevel)
     vox_center = scene_min_xyz + (vox_ijk + 0.5) * vox_size
     return vox_center, vox_size
 
 
-def gen_gridpoints_coordinate(octpath, octlevel):
+def gen_gridpoints_coordinate(octpath, octlevel, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     Compute the eight grid points integer coordinate of each voxel.
     The grid point coordinate is represtened as (x, y, z) under the finest Octree level.
@@ -137,13 +145,14 @@ def gen_gridpoints_coordinate(octpath, octlevel):
     Output:
         @gridpts:       [N, 8, 3] int64 tensor
     '''
-    vox_ijk = new_svraster_cuda.utils.octpath_2_ijk(octpath, octlevel)
-    lv2max = (MAX_NUM_LEVELS - octlevel).long()
+    max_num_levels = get_max_num_levels(backend_name)
+    vox_ijk = get_backend_module(backend_name).utils.octpath_2_ijk(octpath, octlevel)
+    lv2max = (max_num_levels - octlevel).long()
     base_grid_ijk = (vox_ijk << lv2max).view(-1, 1, 3)
     gridpts = base_grid_ijk + (subtree_shift_int64 << lv2max.view(-1, 1, 1))
     return gridpts
 
-def compute_gridpoints_xyz(gridpts, scene_center, scene_extent):
+def compute_gridpoints_xyz(gridpts, scene_center, scene_extent, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     Compute grid points position from the integer coordinates.
 
@@ -158,12 +167,12 @@ def compute_gridpoints_xyz(gridpts, scene_center, scene_extent):
     scene_min_xyz = scene_center - 0.5 * scene_extent
     finest_vox_size = level_2_vox_size(
         scene_extent,
-        torch.tensor(MAX_NUM_LEVELS, dtype=torch.int64, device="cuda"))
+        torch.tensor(get_max_num_levels(backend_name), dtype=torch.int64, device="cuda"))
     gridxyz = scene_min_xyz + gridpts * finest_vox_size
     return gridxyz
 
 
-def gen_children(octpath, octlevel):
+def gen_children(octpath, octlevel, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     Compute the eight subdivided Octree paths and levels.
 
@@ -175,7 +184,8 @@ def gen_children(octpath, octlevel):
         @octlevel:      [N*8, 1]
     '''
     # Sanity check
-    octpath_sanity_check(octpath, octlevel)
+    max_num_levels = get_max_num_levels(backend_name)
+    octpath_sanity_check(octpath, octlevel, backend_name=backend_name)
 
     # Ensure trailing dim
     octpath = octpath.reshape(-1, 1)
@@ -183,14 +193,14 @@ def gen_children(octpath, octlevel):
 
     # Next level
     octlevel = octlevel + 1
-    assert octlevel.max() <= MAX_NUM_LEVELS, \
+    assert octlevel.max() <= max_num_levels, \
         'Maximum level out of bound after subdivision.'
 
     # The eight octans
     # TODO: remove sanity check
     children = torch.arange(8, dtype=torch.int64, device="cuda")
-    assert not (octpath & (children << (3 * (MAX_NUM_LEVELS - octlevel)))).any()
-    octpath = octpath | (children << (3 * (MAX_NUM_LEVELS - octlevel)))
+    assert not (octpath & (children << (3 * (max_num_levels - octlevel)))).any()
+    octpath = octpath | (children << (3 * (max_num_levels - octlevel)))
 
     # Reshape
     octpath = octpath.reshape(-1, 1)
@@ -200,7 +210,7 @@ def gen_children(octpath, octlevel):
     return octpath, octlevel
 
 
-def build_grid_pts_link(octpath, octlevel):
+def build_grid_pts_link(octpath, octlevel, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     Build link between voxel and grid_pts.
 
@@ -215,14 +225,14 @@ def build_grid_pts_link(octpath, octlevel):
                        The indices to the eight corner grid points of each voxel.
     '''
     assert octpath.shape == octlevel.shape
-    gridpts = gen_gridpoints_coordinate(octpath, octlevel)
+    gridpts = gen_gridpoints_coordinate(octpath, octlevel, backend_name=backend_name)
     grid_pts_key, vox_key = gridpts.reshape(-1, 3).unique(dim=0, return_inverse=True)
     grid_pts_key = grid_pts_key.contiguous()
     vox_key = vox_key.reshape(-1, 8).contiguous()
     return grid_pts_key, vox_key
 
 
-def gen_octpath_dense(outside_level, n_level_inside):
+def gen_octpath_dense(outside_level, n_level_inside, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     It contructs octpath for dense (2**n_level_inside) ** 3 voxels inside.
     The region covers the inside part of (outside_level+1) level.
@@ -230,17 +240,18 @@ def gen_octpath_dense(outside_level, n_level_inside):
     The final node level is "outside_level + n_level_inside".
     '''
     assert n_level_inside > 0
+    max_num_levels = get_max_num_levels(backend_name)
 
     # Compute the path from outside to the eight inside nodes.
     the_eight = torch.arange(8, dtype=torch.int64, device="cuda")
-    octpath = the_eight << (3 * (MAX_NUM_LEVELS-1))
+    octpath = the_eight << (3 * (max_num_levels - 1))
     for k in range(outside_level):
-        octpath |= (the_eight ^ 0b111) << (3 * (MAX_NUM_LEVELS-(k+2)))
+        octpath |= (the_eight ^ 0b111) << (3 * (max_num_levels - (k + 2)))
 
     # Construct dense voxel inside the eight inside nodes.
     if n_level_inside > 1:
         dense_octpath = torch.arange((2**(n_level_inside-1)) ** 3, dtype=torch.int64, device="cuda")
-        dense_octpath = dense_octpath << (3 * (MAX_NUM_LEVELS-(outside_level+1)-(n_level_inside-1)))
+        dense_octpath = dense_octpath << (3 * (max_num_levels - (outside_level + 1) - (n_level_inside - 1)))
         octpath = (octpath.view(8,1) | dense_octpath)
 
     octpath = octpath.reshape(-1, 1)
@@ -248,7 +259,7 @@ def gen_octpath_dense(outside_level, n_level_inside):
     return octpath, octlevel
 
 
-def gen_octpath_shell(shell_level, n_level_inside):
+def gen_octpath_shell(shell_level, n_level_inside, backend_name: BackendName = DEFAULT_BACKEND):
     '''
     It contructs octpath for a shell at the given levels.
     The region covers the shell part of shell_level level.
@@ -257,21 +268,22 @@ def gen_octpath_shell(shell_level, n_level_inside):
     '''
     assert shell_level > 0
     assert n_level_inside > 0
+    max_num_levels = get_max_num_levels(backend_name)
 
     # Compute the path from outside to the eight inside nodes.
     the_eight = torch.arange(8, dtype=torch.int64, device="cuda")
-    octpath = the_eight << (3 * (MAX_NUM_LEVELS-1))
+    octpath = the_eight << (3 * (max_num_levels - 1))
     for k in range(shell_level-1):
-        octpath |= (the_eight ^ 0b111) << (3 * (MAX_NUM_LEVELS-(k+2)))
+        octpath |= (the_eight ^ 0b111) << (3 * (max_num_levels - (k + 2)))
 
     # Produce the shell part
-    octpath = octpath.view(8,1) | (the_eight << (3 * (MAX_NUM_LEVELS-shell_level-1)))
+    octpath = octpath.view(8,1) | (the_eight << (3 * (max_num_levels - shell_level - 1)))
     octpath = octpath[the_eight != (the_eight ^ 0b111).view(8, 1)]
 
     # Construct dense voxel inside the eight inside nodes.
     if n_level_inside > 1:
         dense_octpath = torch.arange((2**(n_level_inside-1)) ** 3, dtype=torch.int64, device="cuda")
-        dense_octpath = dense_octpath << (3 * (MAX_NUM_LEVELS - shell_level - n_level_inside))
+        dense_octpath = dense_octpath << (3 * (max_num_levels - shell_level - n_level_inside))
         octpath = (octpath.view(56,1) | dense_octpath)
 
     octpath = octpath.reshape(-1, 1)
@@ -279,8 +291,8 @@ def gen_octpath_shell(shell_level, n_level_inside):
     return octpath, octlevel
 
 
-def clamp_level(octpath, octlevel, max_lv):
-    num_bit_to_mask = 3 * max(0, MAX_NUM_LEVELS - max_lv)
+def clamp_level(octpath, octlevel, max_lv, backend_name: BackendName = DEFAULT_BACKEND):
+    num_bit_to_mask = 3 * max(0, get_max_num_levels(backend_name) - max_lv)
     octpath = (octpath >> num_bit_to_mask) << num_bit_to_mask
     octlevel = octlevel.clamp_max(max_lv)
 

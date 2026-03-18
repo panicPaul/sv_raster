@@ -16,7 +16,6 @@ from tqdm import tqdm
 import trimesh
 
 import torch
-import new_svraster_cuda
 import tyro
 
 from sv_raster.new.config import load_config
@@ -90,7 +89,7 @@ def extract_mesh_progressive(args, data_pack, voxel_model, init_lv, final_lv, cr
         inside_max = torch.tensor(crop_bbox[1], dtype=torch.float32, device="cuda")
 
     # Initialize a dense grid
-    vol = SparseVoxelModel(sh_degree=0)
+    vol = SparseVoxelModel(backend=voxel_model.backend_name, sh_degree=0)
     vol.model_init(
         bounding=torch.stack([inside_min, inside_max]),
         outside_level=0,
@@ -167,7 +166,7 @@ def extract_mesh(args, data_pack, voxel_model, final_lv, crop_bbox, iso=0):
     octpath, octlevel = octree_utils.clamp_level(voxel_model.octpath, voxel_model.octlevel, target_lv)
 
     # Initialize from clamped adaptive sparse voxels
-    vol = SparseVoxelModel(sh_degree=0)
+    vol = SparseVoxelModel(backend=voxel_model.backend_name, sh_degree=0)
     vol.octpath_init(
         voxel_model.scene_center,
         voxel_model.scene_extent,
@@ -327,6 +326,7 @@ if __name__ == "__main__":
         res_downscale=cfg.data.res_downscale,
         res_width=cfg.data.res_width,
         max_render_ss=max(cfg.model.ss, args.overwrite_ss or 0),
+        backend_name=cfg.model.backend,
         skip_blend_alpha=cfg.data.skip_blend_alpha,
         alpha_is_white=cfg.model.white_background,
         data_device=cfg.data.data_device,
@@ -337,6 +337,7 @@ if __name__ == "__main__":
 
     # Load model
     voxel_model = SparseVoxelModel(
+        backend=cfg.model.backend,
         n_samp_per_vox=cfg.model.n_samp_per_vox,
         sh_degree=cfg.model.sh_degree,
         ss=cfg.model.ss,

@@ -35,6 +35,7 @@ from sv_raster.new.config import (
     load_config,
     load_config_override,
 )
+from sv_raster.new.backend import get_backend_module
 
 from sv_raster.new.utils.system_utils import seed_everything
 from sv_raster.new.utils.image_utils import im_tensor2np, viz_tensordepth
@@ -45,10 +46,9 @@ from sv_raster.new.utils import loss_utils
 from sv_raster.new.dataloader.data_pack import DataPack, compute_iter_idx
 from sv_raster.new.sparse_voxel_model import SparseVoxelModel
 
-import new_svraster_cuda
-
 
 def training(args, cfg: Config):
+    backend = get_backend_module(cfg.model.backend)
     # Init and load data pack
     data_pack = DataPack(
         source_path=cfg.data.source_path,
@@ -57,6 +57,7 @@ def training(args, cfg: Config):
         res_downscale=cfg.data.res_downscale,
         res_width=cfg.data.res_width,
         max_render_ss=max(cfg.model.ss, cfg.regularizer.ss_aug_max),
+        backend_name=cfg.model.backend,
         skip_blend_alpha=cfg.data.skip_blend_alpha,
         alpha_is_white=cfg.model.white_background,
         data_device=cfg.data.data_device,
@@ -97,6 +98,7 @@ def training(args, cfg: Config):
 
     # Init voxel model
     voxel_model = SparseVoxelModel(
+        backend=cfg.model.backend,
         n_samp_per_vox=cfg.model.n_samp_per_vox,
         sh_degree=cfg.model.sh_degree,
         ss=cfg.model.ss,
@@ -128,7 +130,7 @@ def training(args, cfg: Config):
     # Init optimizer
     def create_trainer():
         # The pytorch built-in `torch.optim.Adam` also works
-        optimizer = new_svraster_cuda.sparse_adam.SparseAdam(
+        optimizer = backend.sparse_adam.SparseAdam(
             [
                 {'params': [voxel_model._geo_grid_pts], 'lr': cfg.optimizer.geo_lr},
                 {'params': [voxel_model._sh0], 'lr': cfg.optimizer.sh0_lr},

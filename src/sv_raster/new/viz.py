@@ -16,9 +16,9 @@ from scipy.spatial.transform import Rotation
 
 import torch
 import tyro
-import new_svraster_cuda
 
 from sv_raster.new.config import load_config
+from sv_raster.new.backend import get_backend_module
 
 from sv_raster.new.dataloader.data_pack import DataPack
 from sv_raster.new.sparse_voxel_model import SparseVoxelModel
@@ -45,6 +45,7 @@ def desaturate_image(im: np.ndarray, amount: float = 0.8) -> np.ndarray:
 
 class SVRasterViewer:
     def __init__(self, cfg, model_path: Path, iteration: int, port: int):
+        backend = get_backend_module(cfg.model.backend)
 
         # Load cameras
         data_pack = DataPack(
@@ -53,6 +54,7 @@ class SVRasterViewer:
             res_downscale=cfg.data.res_downscale,
             res_width=cfg.data.res_width,
             max_render_ss=cfg.model.ss,
+            backend_name=cfg.model.backend,
             skip_blend_alpha=cfg.data.skip_blend_alpha,
             alpha_is_white=cfg.model.white_background,
             data_device=cfg.data.data_device,
@@ -65,6 +67,7 @@ class SVRasterViewer:
 
         # Load model
         self.voxel_model = SparseVoxelModel(
+            backend=cfg.model.backend,
             n_samp_per_vox=cfg.model.n_samp_per_vox,
             sh_degree=cfg.model.sh_degree,
             ss=cfg.model.ss,
@@ -142,14 +145,14 @@ class SVRasterViewer:
         self.level_range_slider = self.server.gui.add_multi_slider(
             "level range",
             min=1,
-            max=new_svraster_cuda.meta.MAX_NUM_LEVELS,
+            max=backend.meta.MAX_NUM_LEVELS,
             step=1,
-            initial_value=(3, new_svraster_cuda.meta.MAX_NUM_LEVELS),
+            initial_value=(3, backend.meta.MAX_NUM_LEVELS),
             min_range=0,
         )
         self.highlight_level_dropdown = self.server.gui.add_dropdown(
             "highlight level",
-            options=["None"] + [str(v) for v in range(1, new_svraster_cuda.meta.MAX_NUM_LEVELS + 1)],
+            options=["None"] + [str(v) for v in range(1, backend.meta.MAX_NUM_LEVELS + 1)],
             initial_value="None",
         )
 

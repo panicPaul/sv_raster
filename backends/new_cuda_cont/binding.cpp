@@ -24,7 +24,9 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("rasterize_preprocess", &PREPROCESS::rasterize_preprocess);
     m.def("rasterize_voxels", &FORWARD::rasterize_voxels);
+    m.def("rasterize_voxels_cont_sh", &FORWARD::rasterize_voxels_cont_sh);
     m.def("rasterize_voxels_backward", &BACKWARD::rasterize_voxels_backward);
+    m.def("rasterize_voxels_cont_sh_backward", &BACKWARD::rasterize_voxels_cont_sh_backward);
     m.def("filter_geomState", &RASTER_STATE::filter_geomState);
     m.def("unpack_ImageState", &RASTER_STATE::unpack_ImageState);
 
@@ -35,6 +37,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     m.def("sh_compute", &SH_COMPUTE::sh_compute);
     m.def("sh_compute_bw", &SH_COMPUTE::sh_compute_bw);
+    m.def("sh_compute_residual", &SH_COMPUTE::sh_compute_residual);
+    m.def("sh_compute_residual_bw", &SH_COMPUTE::sh_compute_residual_bw);
 
     m.def("total_variation_bw", &TV_COMPUTE::total_variation_bw);
 

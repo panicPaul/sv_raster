@@ -7,7 +7,10 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import torch
-from new_svraster_cuda.meta import STEP_SZ_SCALE
+
+from sv_raster.new.backend import get_backend_module
+
+STEP_SZ_SCALE = get_backend_module("new_cuda").meta.STEP_SZ_SCALE
 
 def softplus(x):
     return torch.nn.functional.softplus(x)

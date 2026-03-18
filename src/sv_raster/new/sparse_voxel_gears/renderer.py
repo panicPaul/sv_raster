@@ -7,16 +7,15 @@
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 import torch
-import new_svraster_cuda
 
 from sv_raster.new.utils.image_utils import resize_rendering
 
 
-def level2rgb(octlevel: torch.Tensor, level_range: tuple[int, int] | None = None) -> torch.Tensor:
+def level2rgb(octlevel: torch.Tensor, level_range: tuple[int, int] | None = None, *, max_num_levels: int) -> torch.Tensor:
     level = octlevel.float().squeeze(1)
     if level_range is None:
         level_min = 1
-        level_max = new_svraster_cuda.meta.MAX_NUM_LEVELS
+        level_max = max_num_levels
     else:
         level_min, level_max = level_range
     denom = max(1, level_max - level_min)
@@ -36,7 +35,7 @@ class SVRenderer:
         Freeze grid points parameter and pre-gather them to each voxel.
         '''
         with torch.no_grad():
-            self.frozen_vox_geo = new_svraster_cuda.renderer.GatherGeoParams.apply(
+            self.frozen_vox_geo = self.backend.renderer.GatherGeoParams.apply(
                 self.vox_key,
                 torch.arange(self.num_voxels, device="cuda"),
                 self._geo_grid_pts
@@ -49,6 +48,14 @@ class SVRenderer:
         '''
         del self.frozen_vox_geo
         self._geo_grid_pts.requires_grad = True
+
+    def _gather_continuous_sh(self, idx):
+        sh0 = self.backend.renderer.GatherFeatParams.apply(
+            self.vox_key,
+            idx,
+            self._sh0,
+        )
+        return sh0
 
     def vox_fn(self, idx, cam_pos, color_mode=None, viewdir=None):
         '''
@@ -69,7 +76,7 @@ class SVRenderer:
         if hasattr(self, 'frozen_vox_geo'):
             geos = self.frozen_vox_geo
         else:
-            geos = new_svraster_cuda.renderer.GatherGeoParams.apply(
+            geos = self.backend.renderer.GatherGeoParams.apply(
                 self.vox_key,
                 idx,
                 self._geo_grid_pts
@@ -89,7 +96,26 @@ class SVRenderer:
             color_mode = "sh"
 
         if color_mode == "sh":
-            rgbs = new_svraster_cuda.renderer.SH_eval.apply(
+            if self.color_is_grid:
+                sh0 = self._gather_continuous_sh(idx)
+                residual_rgbs = self.backend.renderer.SH_eval_residual.apply(
+                    active_sh_degree,
+                    idx,
+                    self.vox_center,
+                    cam_pos,
+                    viewdir,
+                    self._shs,
+                )
+                vox_params = {
+                    'geos': geos,
+                    'sh0': sh0,
+                    'rgbs': residual_rgbs,
+                    'subdiv_p': self._subdiv_p,
+                }
+                if vox_params['subdiv_p'] is None:
+                    vox_params['subdiv_p'] = torch.ones([self.num_voxels, 1], device="cuda")
+                return vox_params
+            rgbs = self.backend.renderer.SH_eval.apply(
                 active_sh_degree,
                 idx,
                 self.vox_center,
@@ -101,7 +127,11 @@ class SVRenderer:
         elif color_mode == "rand":
             rgbs = torch.rand([self.num_voxels, 3], dtype=torch.float32, device="cuda")
         elif color_mode == "level":
-            rgbs = level2rgb(self.octlevel, getattr(self, "level_color_range", None))
+            rgbs = level2rgb(
+                self.octlevel,
+                getattr(self, "level_color_range", None),
+                max_num_levels=self.backend.meta.MAX_NUM_LEVELS,
+            )
         elif color_mode == "dontcare":
             rgbs = torch.empty([self.num_voxels, 3], dtype=torch.float32, device="cuda")
         else:
@@ -147,7 +177,7 @@ class SVRenderer:
         ###################################
         # Call low-level rasterization API
         ###################################
-        raster_settings = new_svraster_cuda.renderer.RasterSettings(
+        raster_settings = self.backend.renderer.RasterSettings(
             color_mode=color_mode,
             n_samp_per_vox=n_samp_per_vox,
             image_width=w,
@@ -164,7 +194,7 @@ class SVRenderer:
             need_normal=output_normal,
             track_max_w=track_max_w,
             **other_opt)
-        color, depth, normal, T, max_w = new_svraster_cuda.renderer.rasterize_voxels(
+        color, depth, normal, T, max_w = self.backend.renderer.rasterize_voxels(
             raster_settings,
             self.octpath,
             self.vox_center,

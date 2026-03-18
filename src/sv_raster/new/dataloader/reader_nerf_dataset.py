@@ -133,6 +133,7 @@ def read_cameras_from_json(source_path, meta_fname, camera_creator):
             res_width=camera_creator.res_width,
             max_render_ss=camera_creator.max_render_ss,
             image_name=image_path.name,
+            backend_name=camera_creator.backend_name,
         )
 
         if frame.get('heldout', False):

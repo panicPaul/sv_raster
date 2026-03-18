@@ -55,6 +55,45 @@ rasterize_voxels_backward(
 
     const bool debug);
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+rasterize_voxels_cont_sh_backward(
+    const int R,
+    const int n_samp_per_vox,
+    const int image_width, const int image_height,
+    const float tan_fovx, const float tan_fovy,
+    const float cx, const float cy,
+    const torch::Tensor& w2c_matrix,
+    const torch::Tensor& c2w_matrix,
+    const float bg_color,
+
+    const torch::Tensor& octree_paths,
+    const torch::Tensor& vox_centers,
+    const torch::Tensor& vox_lengths,
+    const torch::Tensor& geos,
+    const torch::Tensor& sh0,
+    const torch::Tensor& rgbs,
+
+    const torch::Tensor& geomBuffer,
+    const torch::Tensor& binningBuffer,
+    const torch::Tensor& imageBuffer,
+    const torch::Tensor& out_T,
+
+    const torch::Tensor& dL_dout_color,
+    const torch::Tensor& dL_dout_depth,
+    const torch::Tensor& dL_dout_normal,
+    const torch::Tensor& dL_dout_T,
+
+    const float lambda_R_concen,
+    const torch::Tensor& gt_color,
+    const float lambda_ascending,
+    const float lambda_dist,
+    const bool need_depth,
+    const bool need_normal,
+    const torch::Tensor& out_D,
+    const torch::Tensor& out_N,
+
+    const bool debug);
+
 }
 
 #endif

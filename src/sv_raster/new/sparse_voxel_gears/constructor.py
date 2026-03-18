@@ -8,10 +8,11 @@
 
 import torch
 import numpy as np
-import new_svraster_cuda
 
-from sv_raster.reference.utils.activation_utils import rgb2shzero
+from sv_raster.new.utils.activation_utils import rgb2shzero
 from sv_raster.new.utils import octree_utils
+from sv_raster.new.backend import get_backend_module, get_backend_max_num_levels
+from sv_raster.new.sparse_voxel_gears.adaptive import agg_voxel_into_grid_pts
 
 class SVConstructor:
 
@@ -27,7 +28,7 @@ class SVConstructor:
                    cameras=None,       # Cameras that helps voxel allocation
                    ):
 
-        assert self.max_num_levels <= new_svraster_cuda.meta.MAX_NUM_LEVELS
+        assert self.max_num_levels <= self.backend.meta.MAX_NUM_LEVELS
         assert outside_level <= self.max_num_levels
         assert outside_level + init_n_level <= self.max_num_levels
 
@@ -44,6 +45,7 @@ class SVConstructor:
             scene_extent=self.scene_extent,
             outside_level=outside_level,
             n_level=init_n_level,
+            backend_name=self.backend_name,
             cameras=cameras,
             filter_zero_visiblity=(cameras is not None),
             filter_near=-1)
@@ -63,6 +65,7 @@ class SVConstructor:
                 min_num=min_num,
                 max_level=max_level,
                 runtime_max_level=self.max_num_levels,
+                backend_name=self.backend_name,
                 filter_near=-1)
 
         self.octpath = torch.cat([ou_path, in_path])
@@ -75,13 +78,20 @@ class SVConstructor:
             [self.num_grid_pts, 1], geo_init,
             dtype=torch.float32, device="cuda").requires_grad_()
 
-        self._sh0 = torch.full(
-            [self.num_voxels, 3], rgb2shzero(sh0_init),
-            dtype=torch.float32, device="cuda").requires_grad_()
-
-        self._shs = torch.full(
-            [self.num_voxels, (self.max_sh_degree+1)**2 - 1, 3], shs_init,
-            dtype=torch.float32, device="cuda").requires_grad_()
+        if self.color_is_grid:
+            self._sh0 = torch.full(
+                [self.num_grid_pts, 3], sh0_init,
+                dtype=torch.float32, device="cuda").requires_grad_()
+            self._shs = torch.full(
+                [self.num_voxels, (self.max_sh_degree + 1) ** 2 - 1, 3], shs_init,
+                dtype=torch.float32, device="cuda").requires_grad_()
+        else:
+            self._sh0 = torch.full(
+                [self.num_voxels, 3], rgb2shzero(sh0_init),
+                dtype=torch.float32, device="cuda").requires_grad_()
+            self._shs = torch.full(
+                [self.num_voxels, (self.max_sh_degree+1)**2 - 1, 3], shs_init,
+                dtype=torch.float32, device="cuda").requires_grad_()
 
         # Subdivision priority trackor
         self._subdiv_p = torch.ones(
@@ -120,21 +130,43 @@ class SVConstructor:
             dtype=torch.float32, device="cuda").requires_grad_()
 
         # Setup appearence parameters
-        if torch.is_tensor(rgb):
-            assert rgb.shape == (self.num_voxels, 3)
-            self._sh0 = rgb2shzero(rgb.contiguous().cuda())
-        else:
-            self._sh0 = torch.full(
-                [self.num_voxels, 3], rgb2shzero(rgb),
-                dtype=torch.float32, device="cuda").requires_grad_()
+        if self.color_is_grid:
+            if torch.is_tensor(rgb):
+                assert rgb.shape == (self.num_voxels, 3)
+                rgb_grid = agg_voxel_into_grid_pts(
+                    self.num_grid_pts,
+                    self.vox_key,
+                    rgb.contiguous().cuda()[:, None, :].expand(-1, 8, -1),
+                )
+                self._sh0 = rgb_grid.requires_grad_()
+            else:
+                self._sh0 = torch.full(
+                    [self.num_grid_pts, 3], rgb,
+                    dtype=torch.float32, device="cuda").requires_grad_()
 
-        if torch.is_tensor(shs):
-            assert shs.shape == (self.num_voxels, (self.max_sh_degree+1)**2 - 1, 3)
-            self.shs = shs.contiguous().cuda()
+            if torch.is_tensor(shs):
+                assert shs.shape == (self.num_voxels, (self.max_sh_degree+1)**2 - 1, 3)
+                self._shs = shs.contiguous().cuda().requires_grad_()
+            else:
+                self._shs = torch.full(
+                    [self.num_voxels, (self.max_sh_degree+1)**2 - 1, 3], shs,
+                    dtype=torch.float32, device="cuda").requires_grad_()
         else:
-            self._shs = torch.full(
-                [self.num_voxels, (self.max_sh_degree+1)**2 - 1, 3], shs,
-                dtype=torch.float32, device="cuda").requires_grad_()
+            if torch.is_tensor(rgb):
+                assert rgb.shape == (self.num_voxels, 3)
+                self._sh0 = rgb2shzero(rgb.contiguous().cuda())
+            else:
+                self._sh0 = torch.full(
+                    [self.num_voxels, 3], rgb2shzero(rgb),
+                    dtype=torch.float32, device="cuda").requires_grad_()
+
+            if torch.is_tensor(shs):
+                assert shs.shape == (self.num_voxels, (self.max_sh_degree+1)**2 - 1, 3)
+                self._shs = shs.contiguous().cuda()
+            else:
+                self._shs = torch.full(
+                    [self.num_voxels, (self.max_sh_degree+1)**2 - 1, 3], shs,
+                    dtype=torch.float32, device="cuda").requires_grad_()
 
         # Setup geometry parameters
         if torch.is_tensor(density):
@@ -190,7 +222,7 @@ class SVConstructor:
             raise Exception("xyz out of scene bound")
         if (ijk >= (1 << octlevel.long())).any():
             raise Exception("xyz out of scene bound")
-        octpath = new_svraster_cuda.utils.ijk_2_octpath(ijk, octlevel)
+        octpath = self.backend.utils.ijk_2_octpath(ijk, octlevel)
 
         self.octpath_init(
             scene_center=scene_center,
@@ -319,8 +351,8 @@ def get_scene_bound_tensor(center, extent, outside_level=0):
 
     return scene_center, scene_extent, inside_extent
 
-def get_octlevel_tensor(octlevel, num_voxels=None, max_level=None):
-    max_level = new_svraster_cuda.meta.MAX_NUM_LEVELS if max_level is None else max_level
+def get_octlevel_tensor(octlevel, num_voxels=None, max_level=None, backend_name="new_cuda"):
+    max_level = get_backend_max_num_levels(backend_name) if max_level is None else max_level
     if not torch.is_tensor(octlevel):
         assert np.all(octlevel > 0)
         assert np.all(octlevel <= max_level)
@@ -338,21 +370,24 @@ def get_octlevel_tensor(octlevel, num_voxels=None, max_level=None):
 #################################################
 # Octree layout construction heuristic
 #################################################
-def octlayout_filtering(octpath, octlevel, scene_center, scene_extent, cameras=None, filter_zero_visiblity=True, filter_near=-1):
+def octlayout_filtering(octpath, octlevel, scene_center, scene_extent, backend_name="new_cuda", cameras=None, filter_zero_visiblity=True, filter_near=-1):
+
+    backend = get_backend_module(backend_name)
 
     vox_center, vox_size = octree_utils.octpath_decoding(
         octpath, octlevel,
-        scene_center, scene_extent)
+        scene_center, scene_extent,
+        backend_name=backend_name)
 
     # Filtering
     kept_mask = torch.ones([len(octpath)], dtype=torch.bool, device="cuda")
     if filter_zero_visiblity:
         assert cameras is not None, "Cameras should be given to filter invisible voxels"
-        rate = new_svraster_cuda.renderer.mark_max_samp_rate(
+        rate = backend.renderer.mark_max_samp_rate(
             cameras, octpath, vox_center, vox_size)
         kept_mask &= (rate > 0)
     if filter_near > 0:
-        is_near = new_svraster_cuda.renderer.mark_near(
+        is_near = backend.renderer.mark_near(
             cameras, octpath, vox_center, vox_size, near=filter_near)
         kept_mask &= (~is_near)
     kept_idx = torch.where(kept_mask)[0]
@@ -361,23 +396,27 @@ def octlayout_filtering(octpath, octlevel, scene_center, scene_extent, cameras=N
     return octpath, octlevel
 
 
-def octlayout_inside_uniform(scene_center, scene_extent, outside_level, n_level, cameras=None, filter_zero_visiblity=True, filter_near=-1):
+def octlayout_inside_uniform(scene_center, scene_extent, outside_level, n_level, backend_name="new_cuda", cameras=None, filter_zero_visiblity=True, filter_near=-1):
     octpath, octlevel = octree_utils.gen_octpath_dense(
         outside_level=outside_level,
-        n_level_inside=n_level)
+        n_level_inside=n_level,
+        backend_name=backend_name)
 
     octpath, octlevel = octlayout_filtering(
         octpath=octpath,
         octlevel=octlevel,
         scene_center=scene_center,
         scene_extent=scene_extent,
+        backend_name=backend_name,
         cameras=cameras,
         filter_zero_visiblity=filter_zero_visiblity,
         filter_near=filter_near)
     return octpath, octlevel
 
 
-def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, cameras, min_num, max_level, runtime_max_level, filter_near=-1):
+def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, cameras, min_num, max_level, runtime_max_level, backend_name="new_cuda", filter_near=-1):
+
+    backend = get_backend_module(backend_name)
 
     assert cameras is not None, "Cameras should provided in this mode."
 
@@ -387,7 +426,8 @@ def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, camer
     for lv in range(1, 1+outside_level):
         path, lv = octree_utils.gen_octpath_shell(
             shell_level=lv,
-            n_level_inside=1)
+            n_level_inside=1,
+            backend_name=backend_name)
         octpath.append(path)
         octlevel.append(lv)
     octpath = torch.cat(octpath)
@@ -396,8 +436,8 @@ def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, camer
     # Iteratively subdivide voxels with maximum sampling rate
     while True:
         vox_center, vox_size = octree_utils.octpath_decoding(
-            octpath, octlevel, scene_center, scene_extent)
-        samp_rate = new_svraster_cuda.renderer.mark_max_samp_rate(
+            octpath, octlevel, scene_center, scene_extent, backend_name=backend_name)
+        samp_rate = backend.renderer.mark_max_samp_rate(
             cameras, octpath, vox_center, vox_size)
 
         kept_idx = torch.where((samp_rate > 0))[0]
@@ -419,7 +459,7 @@ def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, camer
         if subdiv_mask.sum() == 0:
             break
         octpath_children, octlevel_children = octree_utils.gen_children(
-            octpath[subdiv_mask], octlevel[subdiv_mask])
+            octpath[subdiv_mask], octlevel[subdiv_mask], backend_name=backend_name)
         octpath = torch.cat([octpath[~subdiv_mask], octpath_children])
         octlevel = torch.cat([octlevel[~subdiv_mask], octlevel_children])
 
@@ -428,6 +468,7 @@ def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, camer
         octlevel=octlevel,
         scene_center=scene_center,
         scene_extent=scene_extent,
+        backend_name=backend_name,
         cameras=cameras,
         filter_zero_visiblity=True,
         filter_near=filter_near)

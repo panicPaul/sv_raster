@@ -20,6 +20,8 @@ class SVInOut:
         '''
         os.makedirs(os.path.dirname(path), exist_ok=True)
         state_dict = {
+            'backend_name': self.backend_name,
+            'color_layout': 'mixed' if self.color_is_grid else 'voxel',
             'active_sh_degree': self.active_sh_degree,
             'scene_center': self.scene_center.data.contiguous(),
             'inside_extent': self.inside_extent.data.contiguous(),
@@ -49,6 +51,18 @@ class SVInOut:
         '''
         self.loaded_path = path
         state_dict = torch.load(path, map_location="cpu", weights_only=False)
+        state_backend = state_dict.get('backend_name')
+        state_color_layout = state_dict.get('color_layout')
+
+        if self.backend_name == "new_cuda_cont":
+            if state_backend != "new_cuda_cont" or state_color_layout != "mixed":
+                raise RuntimeError(
+                    "This checkpoint does not use the new continuous-color new_cuda_cont format."
+                )
+        elif state_backend not in (None, "new_cuda"):
+            raise RuntimeError(
+                f"Checkpoint backend {state_backend!r} does not match model backend {self.backend_name!r}."
+            )
 
         if state_dict.get('quantized', False):
             dequantize_state_dict(state_dict)

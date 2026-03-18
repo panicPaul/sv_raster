@@ -40,6 +40,31 @@ rasterize_voxels(
 
     const bool debug);
 
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+rasterize_voxels_cont_sh(
+    const int n_samp_per_vox,
+    const int image_width, const int image_height,
+    const float tan_fovx, const float tan_fovy,
+    const float cx, const float cy,
+    const torch::Tensor& w2c_matrix,
+    const torch::Tensor& c2w_matrix,
+    const float bg_color,
+    const bool need_depth,
+    const bool need_distortion,
+    const bool need_normal,
+    const bool track_max_w,
+
+    const torch::Tensor& octree_paths,
+    const torch::Tensor& vox_centers,
+    const torch::Tensor& vox_lengths,
+    const torch::Tensor& geos,
+    const torch::Tensor& sh0,
+    const torch::Tensor& rgbs,
+
+    const torch::Tensor& geomBuffer,
+
+    const bool debug);
+
 }
 
 #endif

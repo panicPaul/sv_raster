@@ -158,6 +158,7 @@ if __name__ == "__main__":
         res_downscale=cfg.data.res_downscale,
         res_width=cfg.data.res_width,
         max_render_ss=max(cfg.model.ss, args.overwrite_ss or 0),
+        backend_name=cfg.model.backend,
         skip_blend_alpha=cfg.data.skip_blend_alpha,
         alpha_is_white=cfg.model.white_background,
         data_device=cfg.data.data_device,
@@ -168,6 +169,7 @@ if __name__ == "__main__":
 
     # Load model
     voxel_model = SparseVoxelModel(
+        backend=cfg.model.backend,
         n_samp_per_vox=cfg.model.n_samp_per_vox,
         sh_degree=cfg.model.sh_degree,
         ss=cfg.model.ss,

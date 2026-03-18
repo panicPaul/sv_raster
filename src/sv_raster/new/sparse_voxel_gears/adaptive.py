@@ -106,7 +106,8 @@ class SVAdaptive:
         # Subdivide non-trainable per-voxel attributes.
         octpath, octlevel = octree_utils.gen_children(
             self.octpath[subdivide_idx],
-            self.octlevel[subdivide_idx])
+            self.octlevel[subdivide_idx],
+            backend_name=self.backend_name)
 
         special_subdiv = dict(
             octpath=octpath,

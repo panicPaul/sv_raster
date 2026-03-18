@@ -86,23 +86,34 @@ def rasterize_voxels(
     cam_pos = raster_settings.c2w_matrix[:3, 3]
     vox_params = vox_fn(in_frusts_idx, cam_pos, raster_settings.color_mode)
     geos = vox_params['geos']
-    rgbs = vox_params['rgbs']
     subdiv_p = vox_params['subdiv_p']
+    sh0 = vox_params.get('sh0')
+    rgbs = vox_params.get('rgbs')
 
     # Some voxel parameters checking
     if geos.shape != (N, 8):
         raise Exception(f"Expect geos in ({N}, 8) but got", geos.shape)
-    if rgbs.shape[0] != N:
-        raise Exception(f"Expect rgbs in ({N}, 3) but got", rgbs.shape)
     if subdiv_p.shape[0] != N:
         raise Exception(f"Expect subdiv_p in ({N}, 1) but got", subdiv_p.shape)
 
     if geos.device != device:
         raise Exception("Device mismatch: geos.")
-    if rgbs.device != device:
-        raise Exception("Device mismatch: rgbs.")
     if subdiv_p.device != device:
         raise Exception("Device mismatch: subdiv_p.")
+    if sh0 is None:
+        if rgbs is None or rgbs.shape[0] != N:
+            raise Exception(f"Expect rgbs in ({N}, 3) but got", None if rgbs is None else rgbs.shape)
+        if rgbs.device != device:
+            raise Exception("Device mismatch: rgbs.")
+    else:
+        if sh0.shape != (N, 8, 3):
+            raise Exception(f"Expect sh0 in ({N}, 8, 3) but got", sh0.shape)
+        if sh0.device != device:
+            raise Exception("Device mismatch: sh0.")
+        if rgbs is None or rgbs.shape != (N, 3):
+            raise Exception(f"Expect residual rgbs in ({N}, 3) but got", None if rgbs is None else rgbs.shape)
+        if rgbs.device != device:
+            raise Exception("Device mismatch: residual rgbs.")
 
     # Some checking for regularizations
     if raster_settings.lambda_R_concen > 0:
@@ -115,13 +126,25 @@ def rasterize_voxels(
             raise Exception("Device mismatch.")
 
     # Involk differentiable voxels rasterization.
-    return _RasterizeVoxels.apply(
+    if sh0 is None:
+        return _RasterizeVoxels.apply(
+            raster_settings,
+            geomBuffer,
+            octree_paths,
+            vox_centers,
+            vox_lengths,
+            geos,
+            rgbs,
+            subdiv_p,
+        )
+    return _RasterizeVoxelsContinuousSH.apply(
         raster_settings,
         geomBuffer,
         octree_paths,
         vox_centers,
         vox_lengths,
         geos,
+        sh0,
         rgbs,
         subdiv_p,
     )
@@ -248,6 +271,115 @@ class _RasterizeVoxels(torch.autograd.Function):
         return grads
 
 
+class _RasterizeVoxelsContinuousSH(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        raster_settings,
+        geomBuffer,
+        octree_paths,
+        vox_centers,
+        vox_lengths,
+        geos,
+        sh0,
+        rgbs,
+        subdiv_p,
+    ):
+        need_distortion = raster_settings.lambda_dist > 0
+
+        args = (
+            raster_settings.n_samp_per_vox,
+            raster_settings.image_width,
+            raster_settings.image_height,
+            raster_settings.tanfovx,
+            raster_settings.tanfovy,
+            raster_settings.cx,
+            raster_settings.cy,
+            raster_settings.w2c_matrix,
+            raster_settings.c2w_matrix,
+            raster_settings.bg_color,
+            raster_settings.need_depth,
+            need_distortion,
+            raster_settings.need_normal,
+            raster_settings.track_max_w,
+            octree_paths,
+            vox_centers,
+            vox_lengths,
+            geos,
+            sh0,
+            rgbs,
+            geomBuffer,
+            raster_settings.debug,
+        )
+
+        num_rendered, binningBuffer, imgBuffer, out_color, out_depth, out_normal, out_T, max_w = _C.rasterize_voxels_cont_sh(*args)
+
+        ctx.raster_settings = raster_settings
+        ctx.num_rendered = num_rendered
+        ctx.save_for_backward(
+            octree_paths, vox_centers, vox_lengths,
+            geos, sh0, rgbs,
+            geomBuffer, binningBuffer, imgBuffer, out_T, out_depth, out_normal,
+        )
+        ctx.mark_non_differentiable(max_w)
+        return out_color, out_depth, out_normal, out_T, max_w
+
+    @staticmethod
+    def backward(ctx, dL_dout_color, dL_dout_depth, dL_dout_normal, dL_dout_T, dL_dmax_w):
+        raster_settings = ctx.raster_settings
+        num_rendered = ctx.num_rendered
+        octree_paths, vox_centers, vox_lengths, geos, sh0, rgbs, geomBuffer, binningBuffer, imgBuffer, out_T, out_depth, out_normal = ctx.saved_tensors
+
+        args = (
+            num_rendered,
+            raster_settings.n_samp_per_vox,
+            raster_settings.image_width,
+            raster_settings.image_height,
+            raster_settings.tanfovx,
+            raster_settings.tanfovy,
+            raster_settings.cx,
+            raster_settings.cy,
+            raster_settings.w2c_matrix,
+            raster_settings.c2w_matrix,
+            raster_settings.bg_color,
+            octree_paths,
+            vox_centers,
+            vox_lengths,
+            geos,
+            sh0,
+            rgbs,
+            geomBuffer,
+            binningBuffer,
+            imgBuffer,
+            out_T,
+            dL_dout_color,
+            dL_dout_depth,
+            dL_dout_normal,
+            dL_dout_T,
+            raster_settings.lambda_R_concen,
+            raster_settings.gt_color,
+            raster_settings.lambda_ascending,
+            raster_settings.lambda_dist,
+            raster_settings.need_depth,
+            raster_settings.need_normal,
+            out_depth,
+            out_normal,
+            raster_settings.debug,
+        )
+        dL_dgeos, dL_dsh0, dL_drgbs, subdiv_p_bw = _C.rasterize_voxels_cont_sh_backward(*args)
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            dL_dgeos,
+            dL_dsh0,
+            dL_drgbs,
+            subdiv_p_bw,
+        )
+
+
 class SH_eval(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -314,6 +446,66 @@ class SH_eval(torch.autograd.Function):
         )
 
         return grads
+
+
+class SH_eval_residual(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        active_sh_degree,
+        idx,
+        vox_centers,
+        cam_pos,
+        viewdir,
+        shs,
+    ):
+        if torch.is_tensor(vox_centers) and vox_centers.requires_grad:
+            raise NotImplementedError
+        if torch.is_tensor(cam_pos) and cam_pos.requires_grad:
+            raise NotImplementedError
+        if torch.is_tensor(viewdir) and viewdir.requires_grad:
+            raise NotImplementedError
+
+        if idx is None:
+            idx = torch.empty(0, dtype=torch.int64)
+
+        if viewdir is not None:
+            vox_centers = viewdir
+            cam_pos = torch.zeros_like(cam_pos)
+
+        rgbs = _C.sh_compute_residual(
+            active_sh_degree,
+            idx,
+            vox_centers,
+            cam_pos,
+            shs,
+        )
+
+        ctx.active_sh_degree = active_sh_degree
+        ctx.M = 1 + shs.shape[1]
+        ctx.save_for_backward(idx, vox_centers, cam_pos)
+        return rgbs
+
+    @staticmethod
+    def backward(ctx, dL_drgbs):
+        idx, vox_centers, cam_pos = ctx.saved_tensors
+        dL_dshs = _C.sh_compute_residual_bw(
+            ctx.active_sh_degree,
+            ctx.M,
+            idx,
+            vox_centers,
+            cam_pos,
+            dL_drgbs,
+        )
+
+        return (
+            None,
+            None,
+            None,
+            None,
+            None,
+            dL_dshs,
+        )
 
 
 class GatherGeoParams(torch.autograd.Function):

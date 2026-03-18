@@ -9,7 +9,8 @@
 import numpy as np
 
 import torch
-import new_svraster_cuda
+
+from sv_raster.new.backend import get_backend_module
 
 
 class CameraBase:
@@ -67,7 +68,7 @@ class CameraBase:
             wh = (self.image_width, self.image_height)
         if cxcy is None:
             cxcy = (self.cx * wh[0] / self.image_width, self.cy * wh[1] / self.image_height)
-        rd = new_svraster_cuda.utils.compute_rd(
+        rd = get_backend_module().utils.compute_rd(
             width=wh[0], height=wh[1],
             cx=cxcy[0], cy=cxcy[1],
             tanfovx=self.tanfovx, tanfovy=self.tanfovy,
