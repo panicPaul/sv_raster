@@ -9,16 +9,14 @@ requires-python = ">= 3.12"
 dependencies = [
     "ruff>=0.15.6,<0.16",
     "ty>=0.0.23,<0.0.24",
-    "numpy",
-    "torch >= 2.0",
+    "numpy>=2.3.5,<3",
+    "torch",
     "pycolmap>=4.0.1,<5",
     "pillow>=12.0.0,<13",
     "einops>=0.8.2,<0.9",
     "opencv-python>=4.13.0.92,<5",
     "opencv-contrib-python>=4.13.0.92,<5",
-    "yacs>=0.1.8,<0.2",
     "tqdm>=4.66.5,<5",
-    "argparse>=1.4.0,<2",
     "imageio>=2.37.3,<3",
     "imageio-ffmpeg>=0.6.0,<0.7",
     "scikit-image>=0.26.0,<0.27",
@@ -32,6 +30,13 @@ dependencies = [
     "pytorch-msssim>=1.0.0,<2",
     "jaxtyping>=0.3.9,<0.4",
     "marimo>=0.21.0,<0.22",
+    "viser>=1.0.24,<2",
+    "svraster-cuda>=0.0.0,<0.0.1",
+    "new-svraster-cuda>=0.0.0,<0.0.1",
+    "pydantic>=2.12.5,<3",
+    "pyyaml>=6.0.3,<7",
+    "tyro>=1.0.10,<2",
+    "pydantic-yaml>=1.6.0,<2",
     # TODO: find replacement for open3d, gpytoolbox (maybe just fork and update cmake version?)
 ]
 
@@ -42,27 +47,29 @@ requires = ["hatchling"]
 
 # --- uv specific ---
 [tool.uv]
-no-build-isolation-package = ["fused-ssim", "gpytoolbox"]
+no-build-isolation-package = ["fused-ssim"]
 
 [tool.uv.sources]
 fused-ssim = { git = "https://github.com/rahul-goel/fused-ssim" }
 svraster_cuda = { path = "cuda" }
-gpytoolbox = { git = "https://github.com/sgsellan/gpytoolbox" }
+new_svraster_cuda = { path = "new_cuda" }
 
 [tool.uv.extra-build-dependencies]
-gpytoolbox = ["setuptools"]
+
 
 # --- pixi specific ---
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
-[tool.pixi.pypi-dependencies]
+[tool.pixi.pypi-dependencies] # I've only marked local dependencies here
 sv_raster = { path = ".", editable = true }
-svraster_cuda = { path = "cuda", editable = true } # use pixi reinstall for re-compilation
+svraster_cuda = { path = "cuda", editable = false } # use pixi reinstall for re-compilation
+new_svraster_cuda = { path = "new_cuda", editable = false } # use pixi reinstall for re-compilation
+
 
 [tool.pixi.pypi-options]
-no-build-isolation = ["fused-ssim", "gpytoolbox"] # does not seem to be the same as uv's isolation for some reason
+no-build-isolation = ["fused-ssim"] # does not seem to be the same as uv's isolation for some reason
 
 # --- Python version features ---
 [tool.pixi.feature.py312.dependencies]
@@ -99,7 +106,7 @@ extra-index-urls = ["https://download.pytorch.org/whl/cu130"]
 
 # --- Environments (compose Python × CUDA) ---
 [tool.pixi.environments]
-default = ["py313", "cuda128"]
+default = ["py314", "cuda130"]
 py312-cuda128 = ["py312", "cuda128"]
 py313-cuda128 = ["py313", "cuda128"]
 py314-cuda128 = ["py314", "cuda128"]
@@ -110,9 +117,10 @@ py314-cuda130 = ["py314", "cuda130"]
 
 # --- Pixi Dependencies ---
 [tool.pixi.dependencies]
+cmake = ">=4.2.3,<5"
+openblas = ">=0.3.31,<0.4"
 
 
 # --- Tasks ---
 [tool.pixi.tasks]
 compile_backend = "pixi reinstall svraster_cuda"
-post_install = "pixi add --pypi gpytoolbox"
