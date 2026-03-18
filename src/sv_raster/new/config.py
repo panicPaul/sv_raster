@@ -1,7 +1,9 @@
 from pathlib import Path
 
-from pydantic import BaseModel, Field, model_validator
+import new_svraster_cuda
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_yaml import parse_yaml_file_as, to_yaml_str
+import yaml
 
 
 class ModelConfig(BaseModel):
@@ -15,6 +17,20 @@ class ModelConfig(BaseModel):
     white_background: bool = False
     # If true, keeps black-background handling enabled in renderer/model code paths.
     black_background: bool = False
+    # Per-run octree detail cap; the default `16` uses `3 * 16 = 48` order bits, so many common renders still
+    # fit the composite `[tile_id | order_rank]` key into one 64-bit word before the rasterizer needs 128-bit keys.
+    max_num_levels: int = 16
+
+    @field_validator("max_num_levels")
+    @classmethod
+    def validate_max_num_levels(cls, value: int) -> int:
+        backend_max_num_levels = new_svraster_cuda.meta.MAX_NUM_LEVELS
+        if value > backend_max_num_levels:
+            raise ValueError(
+                f"model.max_num_levels={value} exceeds the compiled new_cuda backend limit "
+                f"of {backend_max_num_levels}"
+            )
+        return value
 
 
 class DataConfig(BaseModel):
@@ -181,10 +197,10 @@ class InitConfig(BaseModel):
 
 
 class ProcedureConfig(BaseModel):
-    # Base iteration budget before `sche_mult` is applied in train.py.
+    # Effective iteration budget used by training after schedule normalization.
     n_iter: int = 20_000
-    # Multiplies the runtime schedule, so the effective `n_iter` may differ from the dumped config.
-    sche_mult: float = 1.0
+    # Multiplies schedule-related fields before training starts; normalized saved configs reset this to `1.0`.
+    schedule_multiplier: float = 1.0
     # Global seed used by `seed_everything`.
     seed: int = 3721
     # Iterations where SH colors are recomputed from cameras.
@@ -222,7 +238,7 @@ class Config(BaseModel):
     # Model and renderer hyperparameters.
     model: ModelConfig = Field(default_factory=ModelConfig)
     # Dataset loading and image-resolution settings.
-    data: DataConfig = Field(default_factory=DataConfig)
+    data: DataConfig
     # Scene-bound estimation settings.
     bounding: BoundingConfig = Field(default_factory=BoundingConfig)
     # Optimizer and scheduler settings.
@@ -240,6 +256,17 @@ class Config(BaseModel):
 def load_config(cfg_file: str | Path) -> Config:
     """Load the config from a YAML file."""
     return parse_yaml_file_as(Config, cfg_file)
+
+
+def load_config_override(cfg_file: str | Path) -> dict:
+    """Load a partial config override from YAML without validating it as a full Config."""
+    cfg_file = Path(cfg_file)
+    raw_data = yaml.safe_load(cfg_file.read_text())
+    if raw_data is None:
+        return {}
+    if not isinstance(raw_data, dict):
+        raise TypeError(f"Config override must be a mapping at the top level: {cfg_file}")
+    return raw_data
 
 
 def dump_config(

@@ -10,5 +10,8 @@ import torch
 from . import _C
 
 
-MAX_NUM_LEVELS = _C.MAX_NUM_LEVELS
-STEP_SZ_SCALE = _C.STEP_SZ_SCALE
+def total_variation(grid_pts, vox_key, weight, vox_size_inv, no_tv_s, tv_sparse, grid_pts_grad):
+    assert grid_pts.shape == grid_pts_grad.shape
+    assert len(vox_key.shape) == 2 and vox_key.shape[1] == 8
+    assert vox_key.shape[0] == vox_size_inv.numel()
+    _C.total_variation_bw(grid_pts, vox_key, weight, vox_size_inv, no_tv_s, tv_sparse, grid_pts_grad)

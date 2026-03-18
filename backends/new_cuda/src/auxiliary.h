@@ -12,6 +12,23 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define RASTERIZER_AUXILIARY_H_INCLUDED
 
 #include "config.h"
+#include <cuda/std/tuple>
+
+struct SortKey128
+{
+    uint64_t hi;
+    uint64_t lo;
+};
+
+struct SortKey128Decomposer
+{
+    __host__ __device__ auto operator()(SortKey128& key) const
+    {
+        return cuda::std::tie(key.hi, key.lo);
+    }
+};
+
+static_assert(ORDER_RANK_BITS < 64, "Wide sort keys require the order-rank to fit in 64 bits.");
 
 // Octant ordering tables
 template<uint64_t id, int n>
@@ -44,7 +61,54 @@ __forceinline__ __device__ uint64_t compute_order_rank(uint64_t octree_path, int
 
 __forceinline__ __device__ uint64_t encode_order_key(uint64_t tile_id, uint64_t order_rank)
 {
-    return (tile_id << NUM_BIT_ORDER_RANK) | order_rank;
+    return (tile_id << ORDER_RANK_BITS) | order_rank;
+}
+
+__forceinline__ __host__ __device__ SortKey128 encode_order_key_wide(
+    uint64_t tile_id,
+    uint64_t order_rank)
+{
+    constexpr int tile_lo_bits = SINGLE_SORT_KEY_BITS - ORDER_RANK_BITS;
+    SortKey128 key;
+    key.lo = (tile_id << ORDER_RANK_BITS) | order_rank;
+    key.hi = tile_id >> tile_lo_bits;
+    return key;
+}
+
+__forceinline__ __host__ __device__ uint64_t decode_tile_id_from_key(uint64_t key)
+{
+    return key >> ORDER_RANK_BITS;
+}
+
+__forceinline__ __host__ __device__ uint64_t decode_tile_id_from_key(SortKey128 key)
+{
+    constexpr int tile_lo_bits = SINGLE_SORT_KEY_BITS - ORDER_RANK_BITS;
+    return (key.hi << tile_lo_bits) | (key.lo >> ORDER_RANK_BITS);
+}
+
+__forceinline__ __host__ __device__ uint32_t required_bits_u32(uint32_t n)
+{
+    if (n <= 1)
+        return 0;
+
+    uint32_t bits = 0;
+    n -= 1;
+    while (n > 0)
+    {
+        n >>= 1;
+        bits += 1;
+    }
+    return bits;
+}
+
+__forceinline__ __host__ __device__ float scalar_min(float a, float b)
+{
+    return (a < b) ? a : b;
+}
+
+__forceinline__ __host__ __device__ float scalar_max(float a, float b)
+{
+    return (a > b) ? a : b;
 }
 
 __forceinline__ __device__ uint32_t encode_order_val(uint32_t vox_id, uint32_t quadrant_id)
@@ -89,13 +153,19 @@ __forceinline__ __device__ void getBboxTileRect(const uint2& bbox, uint2& tile_m
     uint32_t ymin = (bbox.x << 16 >> 16);
     uint32_t xmax = (bbox.y >> 16);
     uint32_t ymax = (bbox.y << 16 >> 16);
+    int max_grid_x = ((int)grid.x) - 1;
+    int max_grid_y = ((int)grid.y) - 1;
+    int tile_xmin = (int)(xmin / BLOCK_X);
+    int tile_ymin = (int)(ymin / BLOCK_Y);
+    int tile_xmax = (int)(xmax / BLOCK_X);
+    int tile_ymax = (int)(ymax / BLOCK_Y);
     tile_min = {
-        (uint32_t)max(0, min(((int)grid.x)-1, (int)(xmin / BLOCK_X))),
-        (uint32_t)max(0, min(((int)grid.y)-1, (int)(ymin / BLOCK_Y)))
+        (uint32_t)(tile_xmin > max_grid_x ? max_grid_x : tile_xmin),
+        (uint32_t)(tile_ymin > max_grid_y ? max_grid_y : tile_ymin)
     };
     tile_max = {
-        (uint32_t)max(0, min(((int)grid.x)-1, (int)(xmax / BLOCK_X))),
-        (uint32_t)max(0, min(((int)grid.y)-1, (int)(ymax / BLOCK_Y)))
+        (uint32_t)(tile_xmax > max_grid_x ? max_grid_x : tile_xmax),
+        (uint32_t)(tile_ymax > max_grid_y ? max_grid_y : tile_ymax)
     };
 }
 
@@ -178,19 +248,19 @@ __forceinline__ __host__ __device__ float2 operator*(float2 a, float b)
     return make_float2(a.x * b, a.y * b);
 }
 
-__forceinline__ __device__ float2 min(const float2& a, const float2& b)
+__forceinline__ __host__ __device__ float2 vec_min(const float2& a, const float2& b)
 {
-    return make_float2(min(a.x, b.x), min(a.y, b.y));
+    return make_float2(scalar_min(a.x, b.x), scalar_min(a.y, b.y));
 }
 
-__forceinline__ __device__ float2 max(const float2& a, const float2& b)
+__forceinline__ __host__ __device__ float2 vec_max(const float2& a, const float2& b)
 {
-    return make_float2(max(a.x, b.x), max(a.y, b.y));
+    return make_float2(scalar_max(a.x, b.x), scalar_max(a.y, b.y));
 }
 
-__forceinline__ __device__ float3 clamp0(const float3& a)
+__forceinline__ __host__ __device__ float3 clamp0(const float3& a)
 {
-    return make_float3(max(a.x, 0.f), max(a.y, 0.f), max(a.z, 0.f));
+    return make_float3(scalar_max(a.x, 0.f), scalar_max(a.y, 0.f), scalar_max(a.z, 0.f));
 }
 
 __forceinline__ __device__ float dot(const float3& a, const float3& b)
@@ -243,11 +313,11 @@ __forceinline__ __device__ float2 ray_aabb(float3 vox_c, float vox_l, float3 ro,
     float3 dir = vox_c - ro;
     float3 c0_ = (dir - vox_r) * rd_inv;
     float3 c1_ = (dir + vox_r) * rd_inv;
-    float3 c0 = make_float3(min(c0_.x, c1_.x), min(c0_.y, c1_.y), min(c0_.z, c1_.z));
-    float3 c1 = make_float3(max(c0_.x, c1_.x), max(c0_.y, c1_.y), max(c0_.z, c1_.z));
+    float3 c0 = make_float3(scalar_min(c0_.x, c1_.x), scalar_min(c0_.y, c1_.y), scalar_min(c0_.z, c1_.z));
+    float3 c1 = make_float3(scalar_max(c0_.x, c1_.x), scalar_max(c0_.y, c1_.y), scalar_max(c0_.z, c1_.z));
     float2 ab = make_float2(
-        max(max(c0.x, c0.y), c0.z),
-        min(min(c1.x, c1.y), c1.z)
+        scalar_max(scalar_max(c0.x, c0.y), c0.z),
+        scalar_min(scalar_min(c1.x, c1.y), c1.z)
     );
     return ab;
 }
@@ -287,7 +357,7 @@ __forceinline__ __device__ float exp_linear_11_bw(float x)
 
 __forceinline__ __device__ float relu(float x)
 {
-    return max(x, 0.f);
+    return scalar_max(x, 0.f);
 }
 
 __forceinline__ __device__ float relu_bw(float x)
@@ -295,17 +365,17 @@ __forceinline__ __device__ float relu_bw(float x)
     return float(x > 0.f);
 }
 
-__forceinline__ __device__ float safe_rnorm(const float3& v)
+__forceinline__ __host__ __device__ float safe_rnorm(const float3& v)
 {
-    return rsqrtf(v.x*v.x + v.y*v.y + v.z*v.z + 1e-15f);
+    return 1.0f / sqrtf(v.x*v.x + v.y*v.y + v.z*v.z + 1e-15f);
 }
 
-__forceinline__ __device__ float safe_rnorm(const float x, const float y, const float z)
+__forceinline__ __host__ __device__ float safe_rnorm(const float x, const float y, const float z)
 {
-    return rsqrtf(x*x + y*y + z*z + 1e-15f);
+    return 1.0f / sqrtf(x*x + y*y + z*z + 1e-15f);
 }
 
-__forceinline__ __device__ float tri_interp_weight(const float3 qt, float interp_w[8])
+__forceinline__ __device__ void tri_interp_weight(const float3 qt, float interp_w[8])
 {
     float wx[2] = {1.f - qt.x, qt.x};
     float wy[2] = {1.f - qt.y, qt.y};

@@ -52,4 +52,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.attr("MAX_NUM_LEVELS") = pybind11::int_(MAX_NUM_LEVELS);
     m.attr("STEP_SZ_SCALE") = pybind11::float_(STEP_SZ_SCALE);
     m.attr("MAX_N_SAMP") = pybind11::int_(MAX_N_SAMP);
+    m.attr("MAX_SORT_KEY_BITS") = pybind11::int_(MAX_SORT_KEY_BITS);
+    m.attr("MAX_PACKED_IMAGE_DIM") = pybind11::int_(MAX_PACKED_IMAGE_DIM);
+    m.attr("MAX_RENDER_TILES") = pybind11::int_(MAX_RENDER_TILES);
 }

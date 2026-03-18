@@ -11,7 +11,7 @@ import numpy as np
 import new_svraster_cuda
 
 from sv_raster.reference.utils.activation_utils import rgb2shzero
-from sv_raster.reference.utils import octree_utils
+from sv_raster.new.utils import octree_utils
 
 class SVConstructor:
 
@@ -27,7 +27,9 @@ class SVConstructor:
                    cameras=None,       # Cameras that helps voxel allocation
                    ):
 
-        assert outside_level <= new_svraster_cuda.meta.MAX_NUM_LEVELS
+        assert self.max_num_levels <= new_svraster_cuda.meta.MAX_NUM_LEVELS
+        assert outside_level <= self.max_num_levels
+        assert outside_level + init_n_level <= self.max_num_levels
 
         # Define scene bound
         center = (bounding[0] + bounding[1]) * 0.5
@@ -60,6 +62,7 @@ class SVConstructor:
                 cameras=cameras,
                 min_num=min_num,
                 max_level=max_level,
+                runtime_max_level=self.max_num_levels,
                 filter_near=-1)
 
         self.octpath = torch.cat([ou_path, in_path])
@@ -105,7 +108,7 @@ class SVConstructor:
             center=scene_center, extent=scene_extent)
 
         assert torch.is_tensor(octpath)
-        octlevel = get_octlevel_tensor(octlevel, num_voxels=len(octpath))
+        octlevel = get_octlevel_tensor(octlevel, num_voxels=len(octpath), max_level=self.max_num_levels)
 
         self.octpath = octpath.view(-1, 1).contiguous()
         self.octlevel = octlevel.view(-1, 1).contiguous()
@@ -177,7 +180,7 @@ class SVConstructor:
             center=scene_center, extent=scene_extent)
 
         # Convert to ijkl to octpath
-        octlevel = get_octlevel_tensor(octlevel, num_voxels=len(ijk))
+        octlevel = get_octlevel_tensor(octlevel, num_voxels=len(ijk), max_level=self.max_num_levels)
 
         assert torch.is_tensor(ijk)
         assert len(ijk.shape) == 2 and ijk.shape[1] == 3
@@ -222,7 +225,7 @@ class SVConstructor:
         # Compute voxel level
         if octlevel is not None:
             assert expected_vox_size is None
-            octlevel = get_octlevel_tensor(octlevel, num_voxels=len(xyz))
+            octlevel = get_octlevel_tensor(octlevel, num_voxels=len(xyz), max_level=self.max_num_levels)
         elif expected_vox_size is not None:
             octlevel_fp32 = octree_utils.vox_size_2_level(scene_extent, expected_vox_size)
             if level_round_mode == "nearest":
@@ -233,8 +236,12 @@ class SVConstructor:
                 octlevel_fp32 = octlevel_fp32.ceil()
             else:
                 raise Exception("Unknonw level_round_mode")
-            octlevel_fp32 = octlevel_fp32.clamp(1, new_svraster_cuda.meta.MAX_NUM_LEVELS)
-            octlevel = get_octlevel_tensor(octlevel_fp32.to(torch.int8), num_voxels=len(xyz))
+            octlevel_fp32 = octlevel_fp32.clamp(1, self.max_num_levels)
+            octlevel = get_octlevel_tensor(
+                octlevel_fp32.to(torch.int8),
+                num_voxels=len(xyz),
+                max_level=self.max_num_levels,
+            )
         else:
             raise Exception("Either octlevel or expected_vox_size should be given.")
 
@@ -312,15 +319,17 @@ def get_scene_bound_tensor(center, extent, outside_level=0):
 
     return scene_center, scene_extent, inside_extent
 
-def get_octlevel_tensor(octlevel, num_voxels=None):
+def get_octlevel_tensor(octlevel, num_voxels=None, max_level=None):
+    max_level = new_svraster_cuda.meta.MAX_NUM_LEVELS if max_level is None else max_level
     if not torch.is_tensor(octlevel):
         assert np.all(octlevel > 0)
-        assert np.all(octlevel <= new_svraster_cuda.meta.MAX_NUM_LEVELS)
+        assert np.all(octlevel <= max_level)
         octlevel = torch.tensor(octlevel, dtype=torch.int8, device="cuda")
     if octlevel.numel() == 1:
         octlevel = octlevel.view(1, 1).repeat(num_voxels, 1).contiguous()
     octlevel = octlevel.reshape(-1, 1)
     assert octlevel.dtype == torch.int8
+    assert octlevel.max() <= max_level
     assert num_voxels is None or octlevel.numel() == num_voxels
 
     return octlevel
@@ -368,7 +377,7 @@ def octlayout_inside_uniform(scene_center, scene_extent, outside_level, n_level,
     return octpath, octlevel
 
 
-def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, cameras, min_num, max_level, filter_near=-1):
+def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, cameras, min_num, max_level, runtime_max_level, filter_near=-1):
 
     assert cameras is not None, "Cameras should provided in this mode."
 
@@ -401,9 +410,9 @@ def octlayout_outside_heuristic(scene_center, scene_extent, outside_level, camer
         still_need_n = min(len(octpath), round(still_need_n))
         if still_need_n <= 0:
             break
-        rank = samp_rate * (octlevel.squeeze(1) < new_svraster_cuda.meta.MAX_NUM_LEVELS)
+        rank = samp_rate * (octlevel.squeeze(1) < runtime_max_level)
         subdiv_mask = (rank >= rank.sort().values[-still_need_n])
-        subdiv_mask &= (octlevel.squeeze(1) < new_svraster_cuda.meta.MAX_NUM_LEVELS)
+        subdiv_mask &= (octlevel.squeeze(1) < runtime_max_level)
         subdiv_mask &= octlevel_mask
         samp_rate *= subdiv_mask
         subdiv_mask &= (samp_rate >= samp_rate.quantile(0.9))  # Subdivide only 10% each iteration

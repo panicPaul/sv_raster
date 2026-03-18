@@ -33,6 +33,7 @@ from sv_raster.new.config import (
     RegularizerConfig,
     dump_config,
     load_config,
+    load_config_override,
 )
 
 from sv_raster.new.utils.system_utils import seed_everything
@@ -101,6 +102,7 @@ def training(args, cfg: Config):
         ss=cfg.model.ss,
         white_background=cfg.model.white_background,
         black_background=cfg.model.black_background,
+        max_num_levels=cfg.model.max_num_levels,
     )
 
     if args.load_iteration:
@@ -225,7 +227,7 @@ def training(args, cfg: Config):
             tr_render_opt['lambda_ascending'] = cfg.regularizer.lambda_ascending
 
         # Update auto exposure
-        if cfg.auto_exposure.enable and iteration in cfg.procedure.auto_exposure_upd_ckpt:
+        if cfg.auto_exposure.enable and iteration in cfg.auto_exposure.auto_exposure_upd_ckpt:
             for cam in tr_cams:
                 with torch.no_grad():
                     ref = voxel_model.render(cam, ss=1.0)['color']
@@ -341,7 +343,7 @@ def training(args, cfg: Config):
                 min_samp_interval = min_samp_interval[~prune_mask]
             size_thres = min_samp_interval * cfg.procedure.subdivide_samp_thres
             large_enough = (voxel_model.vox_size * 0.5 > size_thres).squeeze(1)
-            non_finest = voxel_model.octlevel.squeeze(1) < new_svraster_cuda.meta.MAX_NUM_LEVELS
+            non_finest = voxel_model.octlevel.squeeze(1) < voxel_model.max_num_levels
             valid_mask = large_enough & non_finest
 
             # Compute subdivision threshold
@@ -402,9 +404,12 @@ def training(args, cfg: Config):
             ema_loss_for_log += ema_p * (loss - ema_loss_for_log)
             ema_psnr_for_log += ema_p * (psnr - ema_psnr_for_log)
             if iteration % 10 == 0:
+                current_level = int(voxel_model.octlevel.max().item())
                 pb_text = {
                     "Loss": f"{ema_loss_for_log:.5f}",
                     "psnr": f"{ema_psnr_for_log:.2f}",
+                    "level": f"{current_level}/{voxel_model.max_num_levels}",
+                    "vox": f"{voxel_model.num_voxels:.2e}",
                 }
                 progress_bar.set_postfix(pb_text)
                 progress_bar.update(10)
@@ -560,64 +565,189 @@ def training_report(args, cfg: Config, data_pack, voxel_model, iteration, elapse
 
 
 
-if __name__ == "__main__":
-    @dataclass
-    class TrainArgs:
-        model_path: Path | None = None
-        cfg_file: Path | None = None
-        detect_anomaly: bool = False
-        test_iterations: list[int] = field(default_factory=lambda: [-1])
-        pg_view_every: int = 200
-        checkpoint_iterations: list[int] = field(default_factory=list)
-        load_iteration: int | None = None
-        load_optimizer: bool = False
-        save_optimizer: bool = False
-        save_quantized: bool = False
-        model: ModelConfig = field(default_factory=ModelConfig)
-        data: DataConfig = field(default_factory=DataConfig)
-        bounding: BoundingConfig = field(default_factory=BoundingConfig)
-        optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-        regularizer: RegularizerConfig = field(default_factory=RegularizerConfig)
-        init: InitConfig = field(default_factory=InitConfig)
-        procedure: ProcedureConfig = field(default_factory=ProcedureConfig)
-        auto_exposure: AutoExposureConfig = field(default_factory=AutoExposureConfig)
+@dataclass
+class TrainCliArgs:
+    model_path: Path | None = None
+    cfg_file: Path | None = None
+    overwrite: bool = False
+    detect_anomaly: bool = False
+    test_iterations: list[int] = field(default_factory=lambda: [-1])
+    pg_view_every: int = 200
+    checkpoint_iterations: list[int] = field(default_factory=list)
+    load_iteration: int | None = None
+    load_optimizer: bool = False
+    save_optimizer: bool = False
+    save_quantized: bool = False
+    model: ModelConfig = field(default_factory=ModelConfig)
+    data: DataConfig = field(default_factory=DataConfig.model_construct)
+    bounding: BoundingConfig = field(default_factory=BoundingConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    regularizer: RegularizerConfig = field(default_factory=RegularizerConfig)
+    init: InitConfig = field(default_factory=InitConfig)
+    procedure: ProcedureConfig = field(default_factory=ProcedureConfig)
+    auto_exposure: AutoExposureConfig = field(default_factory=AutoExposureConfig)
 
-    cfg_file = None
-    argv = sys.argv[1:]
+
+@dataclass
+class TrainArgs:
+    model_path: Path
+    overwrite: bool
+    detect_anomaly: bool
+    test_iterations: list[int]
+    pg_view_every: int
+    checkpoint_iterations: list[int]
+    load_iteration: int | None
+    load_optimizer: bool
+    save_optimizer: bool
+    save_quantized: bool
+
+
+def parse_cfg_file_arg(argv: list[str]) -> Path | None:
     for i, token in enumerate(argv):
-        if token in {"--cfg-file", "--cfg_file"}:
-            if i + 1 < len(argv):
-                cfg_file = Path(argv[i + 1])
-            break
+        if token in {"--cfg-file", "--cfg_file"} and i + 1 < len(argv):
+            return Path(argv[i + 1])
         if token.startswith("--cfg-file=") or token.startswith("--cfg_file="):
-            cfg_file = Path(token.split("=", 1)[1])
-            break
+            return Path(token.split("=", 1)[1])
+    return None
 
-    base_cfg = load_config(cfg_file) if cfg_file is not None else Config()
-    args = tyro.cli(
-        TrainArgs,
-        default=TrainArgs(
-            cfg_file=cfg_file,
-            model=base_cfg.model,
-            data=base_cfg.data,
-            bounding=base_cfg.bounding,
-            optimizer=base_cfg.optimizer,
-            regularizer=base_cfg.regularizer,
-            init=base_cfg.init,
-            procedure=base_cfg.procedure,
-            auto_exposure=base_cfg.auto_exposure,
-        ),
+
+def build_cli_defaults(cfg_file: Path | None) -> TrainCliArgs:
+    defaults = TrainCliArgs()
+    if cfg_file is None:
+        return defaults
+
+    override = load_config_override(cfg_file)
+    section_defaults = {
+        "model": defaults.model,
+        "data": defaults.data,
+        "bounding": defaults.bounding,
+        "optimizer": defaults.optimizer,
+        "regularizer": defaults.regularizer,
+        "init": defaults.init,
+        "procedure": defaults.procedure,
+        "auto_exposure": defaults.auto_exposure,
+    }
+    for section_name, section_default in section_defaults.items():
+        if section_name not in override:
+            continue
+        section_override = override.pop(section_name)
+        if not isinstance(section_override, dict):
+            raise TypeError(f"Config override section '{section_name}' must be a mapping.")
+        section_data = section_default.model_dump(mode="python", exclude_unset=True)
+        section_data.update(section_override)
+        if section_name == "data" and "source_path" not in section_data:
+            updated_section = type(section_default).model_construct(**section_data)
+        else:
+            updated_section = type(section_default).model_validate(section_data)
+        setattr(defaults, section_name, updated_section)
+
+    if override:
+        unknown_keys = ", ".join(sorted(override.keys()))
+        raise KeyError(f"Unknown config override section(s): {unknown_keys}")
+
+    defaults.cfg_file = cfg_file
+    return defaults
+
+
+def build_config(args: TrainCliArgs) -> Config:
+    return Config.model_validate({
+        "model": args.model.model_dump(mode="python"),
+        "data": args.data.model_dump(mode="python"),
+        "bounding": args.bounding.model_dump(mode="python"),
+        "optimizer": args.optimizer.model_dump(mode="python"),
+        "regularizer": args.regularizer.model_dump(mode="python"),
+        "init": args.init.model_dump(mode="python"),
+        "procedure": args.procedure.model_dump(mode="python"),
+        "auto_exposure": args.auto_exposure.model_dump(mode="python"),
+    })
+
+
+def apply_schedule_multiplier(cfg: Config) -> Config:
+    schedule_multiplier = cfg.procedure.schedule_multiplier
+    if schedule_multiplier == 1.0:
+        return cfg
+
+    scaled_cfg = cfg.model_copy(deep=True)
+
+    scaled_cfg.optimizer.geo_lr /= schedule_multiplier
+    scaled_cfg.optimizer.sh0_lr /= schedule_multiplier
+    scaled_cfg.optimizer.shs_lr /= schedule_multiplier
+    scaled_cfg.optimizer.lr_decay_ckpt = [
+        round(v * schedule_multiplier) if v > 0 else v
+        for v in scaled_cfg.optimizer.lr_decay_ckpt
+    ]
+
+    scaled_cfg.regularizer.sparse_depth_until = round(scaled_cfg.regularizer.sparse_depth_until * schedule_multiplier)
+    scaled_cfg.regularizer.ascending_from = round(scaled_cfg.regularizer.ascending_from * schedule_multiplier)
+    scaled_cfg.regularizer.dist_from = round(scaled_cfg.regularizer.dist_from * schedule_multiplier)
+    scaled_cfg.regularizer.tv_from = round(scaled_cfg.regularizer.tv_from * schedule_multiplier)
+    scaled_cfg.regularizer.tv_until = round(scaled_cfg.regularizer.tv_until * schedule_multiplier)
+    scaled_cfg.regularizer.n_dmean_from = round(scaled_cfg.regularizer.n_dmean_from * schedule_multiplier)
+    scaled_cfg.regularizer.n_dmean_end = round(scaled_cfg.regularizer.n_dmean_end * schedule_multiplier)
+    scaled_cfg.regularizer.n_dmed_from = round(scaled_cfg.regularizer.n_dmed_from * schedule_multiplier)
+    scaled_cfg.regularizer.n_dmed_end = round(scaled_cfg.regularizer.n_dmed_end * schedule_multiplier)
+    scaled_cfg.regularizer.depthanythingv2_from = round(scaled_cfg.regularizer.depthanythingv2_from * schedule_multiplier)
+    scaled_cfg.regularizer.depthanythingv2_end = round(scaled_cfg.regularizer.depthanythingv2_end * schedule_multiplier)
+    scaled_cfg.regularizer.mast3r_metric_depth_from = round(scaled_cfg.regularizer.mast3r_metric_depth_from * schedule_multiplier)
+    scaled_cfg.regularizer.mast3r_metric_depth_end = round(scaled_cfg.regularizer.mast3r_metric_depth_end * schedule_multiplier)
+
+    scaled_cfg.procedure.n_iter = round(scaled_cfg.procedure.n_iter * schedule_multiplier)
+    scaled_cfg.procedure.adapt_from = round(scaled_cfg.procedure.adapt_from * schedule_multiplier)
+    scaled_cfg.procedure.adapt_every = round(scaled_cfg.procedure.adapt_every * schedule_multiplier)
+    scaled_cfg.procedure.prune_until = round(scaled_cfg.procedure.prune_until * schedule_multiplier)
+    scaled_cfg.procedure.subdivide_until = round(scaled_cfg.procedure.subdivide_until * schedule_multiplier)
+    scaled_cfg.procedure.subdivide_all_until = round(scaled_cfg.procedure.subdivide_all_until * schedule_multiplier)
+    scaled_cfg.procedure.reset_sh_ckpt = [
+        round(v * schedule_multiplier) if v > 0 else v
+        for v in scaled_cfg.procedure.reset_sh_ckpt
+    ]
+    scaled_cfg.procedure.schedule_multiplier = 1.0
+    scaled_cfg.auto_exposure.auto_exposure_upd_ckpt = [
+        round(v * schedule_multiplier) if v > 0 else v
+        for v in scaled_cfg.auto_exposure.auto_exposure_upd_ckpt
+    ]
+
+    return scaled_cfg
+
+
+def normalize_iterations(iterations: list[int], n_iter: int) -> list[int]:
+    normalized = list(iterations)
+    for i, value in enumerate(normalized):
+        if value < 0:
+            normalized[i] += n_iter + 1
+    return normalized
+
+
+def resolve_model_path(model_path: Path | None) -> Path:
+    if model_path is not None:
+        return model_path
+    datetime_str = datetime.datetime.now().strftime("%Y-%m%d-%H%M")
+    unique_str = str(uuid.uuid4())[:6]
+    folder_name = f"{datetime_str}-{unique_str}"
+    return Path("./output") / folder_name
+
+
+def resolve_train_args(args: TrainCliArgs, cfg: Config) -> TrainArgs:
+    return TrainArgs(
+        model_path=resolve_model_path(args.model_path),
+        overwrite=args.overwrite,
+        detect_anomaly=args.detect_anomaly,
+        test_iterations=normalize_iterations(args.test_iterations, cfg.procedure.n_iter),
+        pg_view_every=args.pg_view_every,
+        checkpoint_iterations=normalize_iterations(args.checkpoint_iterations, cfg.procedure.n_iter),
+        load_iteration=args.load_iteration,
+        load_optimizer=args.load_optimizer,
+        save_optimizer=args.save_optimizer,
+        save_quantized=args.save_quantized,
     )
-    cfg = Config(
-        model=args.model,
-        data=args.data,
-        bounding=args.bounding,
-        optimizer=args.optimizer,
-        regularizer=args.regularizer,
-        init=args.init,
-        procedure=args.procedure,
-        auto_exposure=args.auto_exposure,
-    )
+
+
+def main() -> None:
+    cfg_file = parse_cfg_file_arg(sys.argv[1:])
+    cli_defaults = build_cli_defaults(cfg_file)
+    cli_args = tyro.cli(TrainCliArgs, default=cli_defaults)
+    cfg = apply_schedule_multiplier(build_config(cli_args))
+    args = resolve_train_args(cli_args, cfg)
 
     # Global init
     seed_everything(cfg.procedure.seed)
@@ -625,51 +755,21 @@ if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
     # Setup output folder and dump config
-    if not args.model_path:
-        datetime_str = datetime.datetime.now().strftime("%Y-%m%d-%H%M")
-        unique_str = str(uuid.uuid4())[:6]
-        folder_name = f"{datetime_str}-{unique_str}"
-        args.model_path = Path("./output") / folder_name
+    is_resume = args.load_iteration is not None
+    if args.model_path.exists() and any(args.model_path.iterdir()) and not (args.overwrite or is_resume):
+        raise FileExistsError(
+            f"Refusing to train into non-empty output directory: {args.model_path}. "
+            "Pass --overwrite to allow this, or use --load-iteration to resume."
+        )
 
     args.model_path.mkdir(parents=True, exist_ok=True)
-    dump_config(cfg, args.model_path / "config.yaml", overwrite=True)
+    dump_config(cfg, args.model_path / "config.yaml", overwrite=args.overwrite or is_resume)
     print(f"Output folder: {args.model_path}")
-
-    # Apply scheduler scaling
-    if cfg.procedure.sche_mult != 1:
-        sche_mult = cfg.procedure.sche_mult
-
-        for key in ['geo_lr', 'sh0_lr', 'shs_lr']:
-            setattr(cfg.optimizer, key, getattr(cfg.optimizer, key) / sche_mult)
-        cfg.optimizer.lr_decay_ckpt = [
-            round(v * sche_mult) if v > 0 else v
-            for v in cfg.optimizer.lr_decay_ckpt]
-
-        for key in [
-                'dist_from', 'tv_from', 'tv_until',
-                'n_dmean_from', 'n_dmean_end',
-                'n_dmed_from', 'n_dmed_end',
-                'depthanythingv2_from', 'depthanythingv2_end',
-                'mast3r_metric_depth_from', 'mast3r_metric_depth_end']:
-            setattr(cfg.regularizer, key, round(getattr(cfg.regularizer, key) * sche_mult))
-
-        for key in [
-                'n_iter',
-                'adapt_from', 'adapt_every',
-                'prune_until', 'subdivide_until', 'subdivide_all_until']:
-            setattr(cfg.procedure, key, round(getattr(cfg.procedure, key) * sche_mult))
-        cfg.procedure.reset_sh_ckpt = [
-            round(v * sche_mult) if v > 0 else v
-            for v in cfg.procedure.reset_sh_ckpt]
-
-    # Update negative iterations
-    for i in range(len(args.test_iterations)):
-        if args.test_iterations[i] < 0:
-            args.test_iterations[i] += cfg.procedure.n_iter + 1
-    for i in range(len(args.checkpoint_iterations)):
-        if args.checkpoint_iterations[i] < 0:
-            args.checkpoint_iterations[i] += cfg.procedure.n_iter + 1
 
     # Launch training loop
     training(args, cfg)
     print("Everything done.")
+
+
+if __name__ == "__main__":
+    main()

@@ -6,6 +6,8 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
+import new_svraster_cuda
+
 from sv_raster.new.sparse_voxel_gears.constructor import SVConstructor
 from sv_raster.new.sparse_voxel_gears.properties import SVProperties
 from sv_raster.new.sparse_voxel_gears.renderer import SVRenderer
@@ -22,6 +24,7 @@ class SparseVoxelModel(SVConstructor, SVProperties, SVRenderer, SVAdaptive, SVIn
                  ss=1.5,                 # Super-sampling rates for anti-aliasing
                  white_background=False, # Assum white background
                  black_background=False, # Assum black background
+                 max_num_levels=None,    # Runtime octree cap for this model, bounded by the backend maximum
                  ):
         '''
         Setup of the model meta. At this point, no voxel is allocated.
@@ -40,6 +43,7 @@ class SparseVoxelModel(SVConstructor, SVProperties, SVRenderer, SVAdaptive, SVIn
         self.ss = ss
         self.white_background = white_background
         self.black_background = black_background
+        self.max_num_levels = max_num_levels if max_num_levels is not None else new_svraster_cuda.meta.MAX_NUM_LEVELS
 
         # List the variable names
         self.per_voxel_attr_lst = [

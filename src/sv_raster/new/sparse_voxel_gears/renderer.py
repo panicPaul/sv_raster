@@ -11,6 +11,24 @@ import new_svraster_cuda
 
 from sv_raster.new.utils.image_utils import resize_rendering
 
+
+def level2rgb(octlevel: torch.Tensor, level_range: tuple[int, int] | None = None) -> torch.Tensor:
+    level = octlevel.float().squeeze(1)
+    if level_range is None:
+        level_min = 1
+        level_max = new_svraster_cuda.meta.MAX_NUM_LEVELS
+    else:
+        level_min, level_max = level_range
+    denom = max(1, level_max - level_min)
+    t = (level - level_min).clamp(0, denom) / denom
+
+    # A compact false-color ramp that separates coarse and fine voxels clearly.
+    r = (1.5 - (4.0 * t - 3.0).abs()).clamp(0.0, 1.0)
+    g = (1.5 - (4.0 * t - 2.0).abs()).clamp(0.0, 1.0)
+    b = (1.5 - (4.0 * t - 1.0).abs()).clamp(0.0, 1.0)
+    return torch.stack([r, g, b], dim=1)
+
+
 class SVRenderer:
 
     def freeze_vox_geo(self):
@@ -57,6 +75,11 @@ class SVRenderer:
                 self._geo_grid_pts
             )
 
+        if hasattr(self, "level_render_filter") and self.level_render_filter is not None:
+            visible_mask = self.octlevel.squeeze(1) == int(self.level_render_filter)
+            geos = geos.clone()
+            geos[~visible_mask] = -100.0
+
         # Compute voxel colors
         if color_mode is None or color_mode == "sh":
             active_sh_degree = self.active_sh_degree
@@ -77,6 +100,8 @@ class SVRenderer:
             )
         elif color_mode == "rand":
             rgbs = torch.rand([self.num_voxels, 3], dtype=torch.float32, device="cuda")
+        elif color_mode == "level":
+            rgbs = level2rgb(self.octlevel, getattr(self, "level_color_range", None))
         elif color_mode == "dontcare":
             rgbs = torch.empty([self.num_voxels, 3], dtype=torch.float32, device="cuda")
         else:

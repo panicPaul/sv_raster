@@ -22,6 +22,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #ifndef RASTER_STATE_H_INCLUDED
 #define RASTER_STATE_H_INCLUDED
 
+#include "auxiliary.h"
+
 #include <cuda_runtime.h>
 #include <torch/extension.h>
 
@@ -70,12 +72,16 @@ struct BinningState
     size_t sorting_size;
     uint64_t* vox_list_keys_unsorted;
     uint64_t* vox_list_keys;
+    SortKey128* vox_list_keys_unsorted_wide;
+    SortKey128* vox_list_keys_wide;
     uint32_t* vox_list_unsorted;
     uint32_t* vox_list;
     char* list_sorting_space;
 
-    static BinningState fromChunk(char*& chunk, size_t P);
+    static BinningState fromChunk(char*& chunk, size_t P, bool use_wide_keys);
 };
+
+size_t required_binning_state(size_t P, bool use_wide_keys);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 unpack_ImageState(

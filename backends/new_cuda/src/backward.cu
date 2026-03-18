@@ -713,9 +713,12 @@ rasterize_voxels_backward(
     RASTER_STATE::GeometryState geomState = RASTER_STATE::GeometryState::fromChunk(
         geomB_ptr,
         P);
+    const int total_key_bits = ORDER_RANK_BITS + required_bits_u32(tile_grid.x * tile_grid.y);
+    const bool use_wide_sort_key = total_key_bits > SINGLE_SORT_KEY_BITS;
     RASTER_STATE::BinningState binningState = RASTER_STATE::BinningState::fromChunk(
         binningB_ptr,
-        R);
+        R,
+        use_wide_sort_key);
     RASTER_STATE::ImageState imgState = RASTER_STATE::ImageState::fromChunk(
         imageB_ptr,
         image_width * image_height,

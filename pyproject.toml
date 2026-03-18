@@ -51,8 +51,10 @@ no-build-isolation-package = ["fused-ssim"]
 
 [tool.uv.sources]
 fused-ssim = { git = "https://github.com/rahul-goel/fused-ssim" }
-svraster_cuda = { path = "cuda" }
-new_svraster_cuda = { path = "new_cuda" }
+svraster_cuda = { path = "backends/cuda" }
+new_svraster_cuda = { path = "backends/new_cuda" }
+svraster_cuda_cont  = { path = "backends/new_cuda_cont" }
+
 
 [tool.uv.extra-build-dependencies]
 
@@ -64,8 +66,9 @@ platforms = ["linux-64"]
 
 [tool.pixi.pypi-dependencies] # I've only marked local dependencies here
 sv_raster = { path = ".", editable = true }
-svraster_cuda = { path = "cuda", editable = false } # use pixi reinstall for re-compilation
-new_svraster_cuda = { path = "new_cuda", editable = false } # use pixi reinstall for re-compilation
+svraster_cuda = { path = "backends/cuda", editable = false } # use pixi reinstall for re-compilation
+new_svraster_cuda = { path = "backends/new_cuda", editable = false } # use pixi reinstall for re-compilation
+svraster_cuda_cont = { path = "backends/new_cuda_cont", editable = false } # use pixi reinstall for re-compilation
 
 
 [tool.pixi.pypi-options]

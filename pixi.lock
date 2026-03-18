@@ -309,8 +309,9 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c8/60/4ea0d6df0b497d51bf2ef87eaab0eb26f8bc3b3313c012da5df3383cced9/yourdfpy-0.0.60-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/31/dc/cc50210e11e465c975462439a492516a73300ab8caa8f5e0902544fd748b/zstandard-0.25.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: ./
-      - pypi: ./cuda
-      - pypi: ./new_cuda
+      - pypi: ./backends/cuda
+      - pypi: ./backends/new_cuda
+      - pypi: ./backends/new_cuda_cont
   py312-cuda128:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -627,8 +628,9 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c8/60/4ea0d6df0b497d51bf2ef87eaab0eb26f8bc3b3313c012da5df3383cced9/yourdfpy-0.0.60-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/53/60/7be26e610767316c028a2cbedb9a3beabdbe33e2182c373f71a1c0b88f36/zstandard-0.25.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: ./
-      - pypi: ./cuda
-      - pypi: ./new_cuda
+      - pypi: ./backends/cuda
+      - pypi: ./backends/new_cuda
+      - pypi: ./backends/new_cuda_cont
   py312-cuda130:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -944,8 +946,9 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c8/60/4ea0d6df0b497d51bf2ef87eaab0eb26f8bc3b3313c012da5df3383cced9/yourdfpy-0.0.60-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/53/60/7be26e610767316c028a2cbedb9a3beabdbe33e2182c373f71a1c0b88f36/zstandard-0.25.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: ./
-      - pypi: ./cuda
-      - pypi: ./new_cuda
+      - pypi: ./backends/cuda
+      - pypi: ./backends/new_cuda
+      - pypi: ./backends/new_cuda_cont
   py313-cuda128:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -1253,8 +1256,9 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c8/60/4ea0d6df0b497d51bf2ef87eaab0eb26f8bc3b3313c012da5df3383cced9/yourdfpy-0.0.60-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/63/4b/e3678b4e776db00f9f7b2fe58e547e8928ef32727d7a1ff01dea010f3f13/zstandard-0.25.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: ./
-      - pypi: ./cuda
-      - pypi: ./new_cuda
+      - pypi: ./backends/cuda
+      - pypi: ./backends/new_cuda
+      - pypi: ./backends/new_cuda_cont
   py313-cuda130:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -1561,8 +1565,9 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c8/60/4ea0d6df0b497d51bf2ef87eaab0eb26f8bc3b3313c012da5df3383cced9/yourdfpy-0.0.60-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/63/4b/e3678b4e776db00f9f7b2fe58e547e8928ef32727d7a1ff01dea010f3f13/zstandard-0.25.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: ./
-      - pypi: ./cuda
-      - pypi: ./new_cuda
+      - pypi: ./backends/cuda
+      - pypi: ./backends/new_cuda
+      - pypi: ./backends/new_cuda_cont
   py314-cuda128:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -1869,8 +1874,9 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c8/60/4ea0d6df0b497d51bf2ef87eaab0eb26f8bc3b3313c012da5df3383cced9/yourdfpy-0.0.60-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/31/dc/cc50210e11e465c975462439a492516a73300ab8caa8f5e0902544fd748b/zstandard-0.25.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: ./
-      - pypi: ./cuda
-      - pypi: ./new_cuda
+      - pypi: ./backends/cuda
+      - pypi: ./backends/new_cuda
+      - pypi: ./backends/new_cuda_cont
   py314-cuda130:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -2176,8 +2182,9 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/c8/60/4ea0d6df0b497d51bf2ef87eaab0eb26f8bc3b3313c012da5df3383cced9/yourdfpy-0.0.60-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/31/dc/cc50210e11e465c975462439a492516a73300ab8caa8f5e0902544fd748b/zstandard-0.25.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: ./
-      - pypi: ./cuda
-      - pypi: ./new_cuda
+      - pypi: ./backends/cuda
+      - pypi: ./backends/new_cuda
+      - pypi: ./backends/new_cuda_cont
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   build_number: 20
@@ -7049,7 +7056,7 @@ packages:
   - pytest-mpl ; extra == 'test-extras'
   - pytest-randomly ; extra == 'test-extras'
   requires_python: '>=3.11,!=3.14.1'
-- pypi: ./new_cuda
+- pypi: ./backends/new_cuda
   name: new-svraster-cuda
   version: 0.0.0
   sha256: 6c6b3c072600f0108533b5fb19328e11d450631d0d8139945216387bfe513f39
@@ -8763,7 +8770,7 @@ packages:
 - pypi: ./
   name: sv-raster
   version: 0.1.0
-  sha256: 88b760c0f1f8bd411c0c3c38b26b54f2d7ad452a2c1ba8cd2eb76af0fe88b497
+  sha256: f4cca20069a22c1326f14f553375b39d297a07c9784885a3154117b57ad80e4c
   requires_dist:
   - ruff>=0.15.6,<0.16
   - ty>=0.0.23,<0.0.24
@@ -8789,8 +8796,8 @@ packages:
   - jaxtyping>=0.3.9,<0.4
   - marimo>=0.21.0,<0.22
   - viser>=1.0.24,<2
-  - svraster-cuda @ file:///home/schlack/Repositories/svraster/cuda
-  - new-svraster-cuda @ file:///home/schlack/Repositories/svraster/new_cuda
+  - svraster-cuda @ file:///home/schlack/Repositories/svraster/backends/cuda
+  - new-svraster-cuda @ file:///home/schlack/Repositories/svraster/backends/new_cuda
   - pydantic>=2.12.5,<3
   - pyyaml>=6.0.3,<7
   - tyro>=1.0.10,<2
@@ -8811,10 +8818,14 @@ packages:
   - mypy ; extra == 'test'
   - zest-releaser[recommended] ; extra == 'test'
   requires_python: '>=3.8'
-- pypi: ./cuda
+- pypi: ./backends/cuda
   name: svraster-cuda
   version: 0.0.0
   sha256: 5b97fdc0ae6571be01fe9c3ed694e76361e67fdf26ed05d57243430a4ea11a97
+- pypi: ./backends/new_cuda_cont
+  name: svraster-cuda-cont
+  version: 0.0.0
+  sha256: de092182a2f723465163abe07ea6fd55c6f5dfc7e7ff95ca28fb8a9abf858c43
 - pypi: https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl
   name: sympy
   version: 1.14.0

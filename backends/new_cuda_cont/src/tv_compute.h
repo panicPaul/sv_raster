@@ -8,23 +8,23 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 *************************************************************************/
 
-#ifndef RASTERIZER_CONFIG_H_INCLUDED
-#define RASTERIZER_CONFIG_H_INCLUDED
+#ifndef TV_COMPUTE_H_INCLUDED
+#define TV_COMPUTE_H_INCLUDED
 
-#define BLOCK_X 16
-#define BLOCK_Y 16
-#define MAX_NUM_LEVELS 16
-#define MAX_ALPHA 0.99999f
-#define MIN_ALPHA 0.00001f
-#define EARLY_STOP_T 0.0001f
+#include <torch/extension.h>
 
-#define STEP_SZ_SCALE 100.f
+namespace TV_COMPUTE {
 
-#define MAX_N_SAMP 3
+// Python interface to directly write the gradient of tv loss.
+void total_variation_bw(
+    const torch::Tensor& grid_pts,
+    const torch::Tensor& vox_key,
+    const float weight,
+    const torch::Tensor& vox_size_inv,
+    const bool no_tv_s,
+    const bool tv_sparse,
+    const torch::Tensor& grid_pts_grad);
 
-// Below are the derived term from above
-#define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
-#define NUM_BIT_ORDER_RANK (3 * MAX_NUM_LEVELS)
-#define NUM_BIT_TILE_ID (64 - NUM_BIT_ORDER_RANK)
+}
 
 #endif

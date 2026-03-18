@@ -1,5 +1,8 @@
+import new_svraster_cuda
+
+
 TILE_SIZE = 16
-MAX_NUM_TILES = 1 << 16
+MAX_NUM_TILES = new_svraster_cuda.meta.MAX_RENDER_TILES
 
 
 def compute_target_image_size(width, height, res_downscale=0.0, res_width=0):
@@ -33,6 +36,6 @@ def validate_camera_resolution(width, height, res_downscale=0.0, res_width=0, ma
             f"Target render resolution {render_height}x{render_width}{image_desc} requires "
             f"{n_tiles} tiles of size {TILE_SIZE}x{TILE_SIZE}, exceeding the renderer "
             f"limit of {MAX_NUM_TILES}. Increase --res_downscale, lower --res_width, "
-            f"or reduce supersampling."
+            f"reduce supersampling, or rebuild `new_cuda` with a larger packed image limit."
         )
     return target_width, target_height

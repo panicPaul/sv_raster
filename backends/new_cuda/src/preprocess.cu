@@ -88,8 +88,8 @@ __global__ void preprocessCUDA(
         corner_coord = make_float2(cam_corner.x * inv_z, cam_corner.y * inv_z);
         quadrant_id = compute_corner_quadrant_id(world_corner, ro);
 
-        coord_min = min(coord_min, corner_coord);
-        coord_max = max(coord_max, corner_coord);
+        coord_min = vec_min(coord_min, corner_coord);
+        coord_max = vec_max(coord_max, corner_coord);
         quadrant_bitset |= (1 << quadrant_id);
     }
 

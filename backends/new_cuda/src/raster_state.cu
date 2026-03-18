@@ -70,7 +70,6 @@ size_t required(size_t P, size_t Q)
 // Explicit template initialization
 template size_t required<GeometryState>(size_t P);
 template size_t required<ImageState>(size_t P, size_t Q);
-template size_t required<BinningState>(size_t P);
 
 
 // Given the pointer to the allocated memory,
@@ -99,21 +98,52 @@ ImageState ImageState::fromChunk(char*& chunk, size_t N, size_t n_tiles)
     return img;
 }
 
-BinningState BinningState::fromChunk(char*& chunk, size_t P)
+BinningState BinningState::fromChunk(char*& chunk, size_t P, bool use_wide_keys)
 {
     BinningState binning;
-    obtain(chunk, binning.vox_list_keys_unsorted, P, 128);
-    obtain(chunk, binning.vox_list_keys, P, 128);
+    binning.vox_list_keys_unsorted = nullptr;
+    binning.vox_list_keys = nullptr;
+    binning.vox_list_keys_unsorted_wide = nullptr;
+    binning.vox_list_keys_wide = nullptr;
+
+    if (use_wide_keys)
+    {
+        obtain(chunk, binning.vox_list_keys_unsorted_wide, P, 128);
+        obtain(chunk, binning.vox_list_keys_wide, P, 128);
+    }
+    else
+    {
+        obtain(chunk, binning.vox_list_keys_unsorted, P, 128);
+        obtain(chunk, binning.vox_list_keys, P, 128);
+    }
     obtain(chunk, binning.vox_list_unsorted, P, 128);
     obtain(chunk, binning.vox_list, P, 128);
 
     // Prepare temporary space for sorting.
-    cub::DeviceRadixSort::SortPairs(
-        nullptr, binning.sorting_size,
-        binning.vox_list_keys_unsorted, binning.vox_list_keys,
-        binning.vox_list_unsorted, binning.vox_list, P);
+    if (use_wide_keys)
+    {
+        cub::DeviceRadixSort::SortPairs(
+            nullptr, binning.sorting_size,
+            binning.vox_list_keys_unsorted_wide, binning.vox_list_keys_wide,
+            binning.vox_list_unsorted, binning.vox_list, P,
+            SortKey128Decomposer{}, 0, MAX_SORT_KEY_BITS);
+    }
+    else
+    {
+        cub::DeviceRadixSort::SortPairs(
+            nullptr, binning.sorting_size,
+            binning.vox_list_keys_unsorted, binning.vox_list_keys,
+            binning.vox_list_unsorted, binning.vox_list, P);
+    }
     obtain(chunk, binning.list_sorting_space, binning.sorting_size, 128);
     return binning;
+}
+
+size_t required_binning_state(size_t P, bool use_wide_keys)
+{
+    char* size = nullptr;
+    BinningState::fromChunk(size, P, use_wide_keys);
+    return ((size_t)size) + 128;
 }
 
 // Helper function for advance debugging.

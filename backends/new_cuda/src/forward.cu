@@ -26,6 +26,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include <cstdio>
+
 #include <cub/cub.cuh>
 #include <cub/device/device_radix_sort.cuh>
 
@@ -499,22 +501,26 @@ void render(
 // Helper function to find the next-highest bit of the MSB on the CPU.
 uint32_t getHigherMsb(uint32_t n)
 {
-    uint32_t msb = sizeof(n) * 4;
-    uint32_t step = msb;
-    while (step > 1)
-    {
-        step /= 2;
-        if (n >> msb)
-            msb += step;
-        else
-            msb -= step;
-    }
-    if (n >> msb)
-        msb++;
-    return msb;
+    return required_bits_u32(n);
+}
+
+template <typename KeyT>
+__forceinline__ __device__ KeyT make_sort_key(uint64_t tile_id, uint64_t order_rank);
+
+template <>
+__forceinline__ __device__ uint64_t make_sort_key<uint64_t>(uint64_t tile_id, uint64_t order_rank)
+{
+    return encode_order_key(tile_id, order_rank);
+}
+
+template <>
+__forceinline__ __device__ SortKey128 make_sort_key<SortKey128>(uint64_t tile_id, uint64_t order_rank)
+{
+    return encode_order_key_wide(tile_id, order_rank);
 }
 
 // Duplicate each voxel by #tiles x #cam_quadrant it touches.
+template <typename KeyT>
 __global__ void duplicateWithKeys(
     int P,
     const int64_t* octree_paths,
@@ -522,7 +528,7 @@ __global__ void duplicateWithKeys(
     const uint32_t* cam_quadrant_bitsets,
     const uint32_t* n_duplicates,
     const uint32_t* n_duplicates_scan,
-    uint64_t* vox_list_keys_unsorted,
+    KeyT* vox_list_keys_unsorted,
     uint32_t* vox_list_unsorted,
     dim3 grid)
 {
@@ -555,7 +561,7 @@ __global__ void duplicateWithKeys(
             for (int x = tile_min.x; x <= tile_max.x; x++)
             {
                 uint64_t tile_id = y * grid.x + x;
-                vox_list_keys_unsorted[off] = encode_order_key(tile_id, order_rank);
+                vox_list_keys_unsorted[off] = make_sort_key<KeyT>(tile_id, order_rank);
                 vox_list_unsorted[off] = encode_order_val(idx, quadrant_id);
                 off++;
             }
@@ -573,20 +579,20 @@ __global__ void duplicateWithKeys(
 // The sorted vox_list_keys is now as:
 //   [--sorted voxels for tile 1--  --sorted voxels for tile 2--  ...]
 // We want to identify the start/end index of each tile from this list.
-__global__ void identifyTileRanges(int L, uint64_t* vox_list_keys, uint2* ranges)
+template <typename KeyT>
+__global__ void identifyTileRanges(int L, const KeyT* vox_list_keys, uint2* ranges)
 {
     auto idx = cg::this_grid().thread_rank();
     if (idx >= L)
         return;
 
     // Read tile ID from key. Update start/end of tile range if at limit.
-    uint64_t key = vox_list_keys[idx];
-    uint32_t currtile = key >> NUM_BIT_ORDER_RANK;
+    uint32_t currtile = decode_tile_id_from_key(vox_list_keys[idx]);
     if (idx == 0)
         ranges[currtile].x = 0;
     else
     {
-        uint32_t prevtile = vox_list_keys[idx - 1] >> NUM_BIT_ORDER_RANK;
+        uint32_t prevtile = decode_tile_id_from_key(vox_list_keys[idx - 1]);
         if (currtile != prevtile)
         {
             ranges[prevtile].y = idx;
@@ -657,33 +663,71 @@ int rasterize_voxels_procedure(
         cudaMemcpyDeviceToHost);
     CHECK_CUDA(debug);
 
-    size_t binning_chunk_size = RASTER_STATE::required<RASTER_STATE::BinningState>(num_rendered);
+    const uint32_t tile_count = tile_grid.x * tile_grid.y;
+    const int total_key_bits = ORDER_RANK_BITS + getHigherMsb(tile_count);
+    if (total_key_bits > MAX_SORT_KEY_BITS)
+        AT_ERROR("Composite raster sort key exceeds MAX_SORT_KEY_BITS.");
+
+    const bool use_wide_sort_key = total_key_bits > SINGLE_SORT_KEY_BITS;
+    static bool printed_wide_sort_key_notice = false;
+    if (use_wide_sort_key && !printed_wide_sort_key_notice)
+    {
+        std::printf(
+            "[new_cuda] Render resolution requires 128-bit raster sort keys "
+            "(tile_count=%u, key_bits=%d).\n",
+            tile_count,
+            total_key_bits);
+        printed_wide_sort_key_notice = true;
+    }
+    size_t binning_chunk_size = RASTER_STATE::required_binning_state(num_rendered, use_wide_sort_key);
     char* binning_chunkptr = binningBuffer(binning_chunk_size);
-    RASTER_STATE::BinningState binningState = RASTER_STATE::BinningState::fromChunk(binning_chunkptr, num_rendered);
+    RASTER_STATE::BinningState binningState =
+        RASTER_STATE::BinningState::fromChunk(binning_chunkptr, num_rendered, use_wide_sort_key);
 
     // For each voxel to be rendered, produce adequate [ tile ID | rank ] key
     // and the corresponding dublicated voxel [ quadrant ID | voxel ID ] to be sorted.
-    duplicateWithKeys <<<(P + 255) / 256, 256>>> (
-        P,
-        octree_paths,
-        geomState.bboxes,
-        geomState.cam_quadrant_bitsets,
-        geomState.n_duplicates,
-        geomState.n_duplicates_scan,
-        binningState.vox_list_keys_unsorted,
-        binningState.vox_list_unsorted,
-        tile_grid);
-    CHECK_CUDA(debug);
+    if (use_wide_sort_key)
+    {
+        duplicateWithKeys<SortKey128> <<<(P + 255) / 256, 256>>> (
+            P,
+            octree_paths,
+            geomState.bboxes,
+            geomState.cam_quadrant_bitsets,
+            geomState.n_duplicates,
+            geomState.n_duplicates_scan,
+            binningState.vox_list_keys_unsorted_wide,
+            binningState.vox_list_unsorted,
+            tile_grid);
+        CHECK_CUDA(debug);
 
-    int bit = getHigherMsb(tile_grid.x * tile_grid.y);
+        cub::DeviceRadixSort::SortPairs(
+            binningState.list_sorting_space,
+            binningState.sorting_size,
+            binningState.vox_list_keys_unsorted_wide, binningState.vox_list_keys_wide,
+            binningState.vox_list_unsorted, binningState.vox_list,
+            num_rendered, SortKey128Decomposer{}, 0, total_key_bits);
+    }
+    else
+    {
+        duplicateWithKeys<uint64_t> <<<(P + 255) / 256, 256>>> (
+            P,
+            octree_paths,
+            geomState.bboxes,
+            geomState.cam_quadrant_bitsets,
+            geomState.n_duplicates,
+            geomState.n_duplicates_scan,
+            binningState.vox_list_keys_unsorted,
+            binningState.vox_list_unsorted,
+            tile_grid);
+        CHECK_CUDA(debug);
 
-    // Sort complete list of (duplicated) ID by keys.
-    cub::DeviceRadixSort::SortPairs(
-        binningState.list_sorting_space,
-        binningState.sorting_size,
-        binningState.vox_list_keys_unsorted, binningState.vox_list_keys,
-        binningState.vox_list_unsorted, binningState.vox_list,
-        num_rendered, 0, NUM_BIT_ORDER_RANK + bit);
+        cub::DeviceRadixSort::SortPairs(
+            binningState.list_sorting_space,
+            binningState.sorting_size,
+            binningState.vox_list_keys_unsorted, binningState.vox_list_keys,
+            binningState.vox_list_unsorted, binningState.vox_list,
+            num_rendered, 0, total_key_bits);
+    }
     CHECK_CUDA(debug);
 
     cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2));
@@ -692,10 +736,20 @@ int rasterize_voxels_procedure(
     // Identify start and end of per-tile workloads in sorted list.
     if (num_rendered > 0)
     {
-        identifyTileRanges <<<(num_rendered + 255) / 256, 256>>> (
-            num_rendered,
-            binningState.vox_list_keys,
-            imgState.ranges);
+        if (use_wide_sort_key)
+        {
+            identifyTileRanges<SortKey128> <<<(num_rendered + 255) / 256, 256>>> (
+                num_rendered,
+                binningState.vox_list_keys_wide,
+                imgState.ranges);
+        }
+        else
+        {
+            identifyTileRanges<uint64_t> <<<(num_rendered + 255) / 256, 256>>> (
+                num_rendered,
+                binningState.vox_list_keys,
+                imgState.ranges);
+        }
         CHECK_CUDA(debug);
     }
 
