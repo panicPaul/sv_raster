@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_yaml import parse_yaml_file_as, to_yaml_str
 
 
@@ -19,7 +19,7 @@ class ModelConfig(BaseModel):
 
 class DataConfig(BaseModel):
     # Root scene directory used by dataset readers and mono-prior caching.
-    source_path: Path = Path()
+    source_path: Path
     # Relative image folder name inside `source_path`.
     image_dir_name: str = "images"
     # Relative mask folder name inside `source_path`.
@@ -107,6 +107,7 @@ class RegularizerConfig(BaseModel):
     mast3r_metric_depth_end: int = 20000
     # End-of-schedule multiplier applied to the MASt3R metric-depth loss weight.
     mast3r_metric_depth_end_mult: float = 0.01
+
     # Weight encouraging final transmittance to concentrate near 0 or 1.
     lambda_T_concen: float = 0.0
     # Weight encouraging final transmittance to approach 0.
@@ -114,13 +115,16 @@ class RegularizerConfig(BaseModel):
     # Weight of the per-point RGB concentration loss in the rasterizer backward pass.
     lambda_R_concen: float = 0.01
     # Weight of the ascending regularizer in the rasterizer backward pass.
+
     lambda_ascending: float = 0.0
     # First iteration where ascending regularization is enabled.
     ascending_from: int = 0
+
     # Weight of the distortion regularizer in the rasterizer.
     lambda_dist: float = 0.1
     # First iteration where distortion regularization is enabled.
     dist_from: int = 10000
+
     # Weight of expected-depth vs normal consistency.
     lambda_normal_dmean: float = 0.0
     # First iteration where expected-depth normal consistency is enabled.
@@ -131,12 +135,14 @@ class RegularizerConfig(BaseModel):
     n_dmean_ks: int = 3
     # Angular tolerance in degrees for expected-depth normal consistency.
     n_dmean_tol_deg: float = 90.0
+
     # Weight of median-depth vs normal consistency.
     lambda_normal_dmed: float = 0.0
     # First iteration where median-depth normal consistency is enabled.
     n_dmed_from: int = 3000
     # Last iteration where median-depth normal consistency remains active.
     n_dmed_end: int = 20_000
+
     # Weight of total-variation regularization on the density field.
     lambda_tv_density: float = 1e-10
     # First iteration where TV density regularization is enabled.
@@ -144,9 +150,19 @@ class RegularizerConfig(BaseModel):
     # Last iteration where TV density regularization is enabled.
     tv_until: int = 10000
     # Upper bound for random supersampling augmentation after iteration 1000.
+
     ss_aug_max: float = 1.5
     # If true, training renders use a random background color.
     rand_bg: bool = False
+
+    @model_validator(mode="after")
+    def validate_mast3r_repo_path(self):
+        if self.lambda_mast3r_metric_depth > 0 and self.mast3r_repo_path is None:
+            raise ValueError(
+                "regularizer.mast3r_repo_path is required when "
+                "regularizer.lambda_mast3r_metric_depth > 0"
+            )
+        return self
 
 
 class InitConfig(BaseModel):
