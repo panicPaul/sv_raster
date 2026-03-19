@@ -63,6 +63,12 @@ class SVProperties:
         return self._shs
 
     @property
+    def geo_value_grid(self):
+        if self.geo_is_hermite:
+            return self._geo_grid_pts[:, :1]
+        return self._geo_grid_pts
+
+    @property
     def subdivision_priority(self):
         return self._subdiv_p.grad
 

@@ -85,7 +85,11 @@ class SVRenderer:
         if hasattr(self, "level_render_filter") and self.level_render_filter is not None:
             visible_mask = self.octlevel.squeeze(1) == int(self.level_render_filter)
             geos = geos.clone()
-            geos[~visible_mask] = -100.0
+            if geos.ndim == 3:
+                geos[~visible_mask] = 0.0
+                geos[~visible_mask, :, 0] = -100.0
+            else:
+                geos[~visible_mask] = -100.0
 
         # Compute voxel colors
         if color_mode is None or color_mode == "sh":

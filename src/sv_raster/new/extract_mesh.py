@@ -220,7 +220,7 @@ def direct_mc(args, voxel_model, final_lv, crop_bbox):
     sign = -1
 
     verts, faces = torch_marching_cubes_grid(
-        grid_pts_val=sign * voxel_model._geo_grid_pts,
+        grid_pts_val=sign * voxel_model.geo_value_grid,
         grid_pts_xyz=voxel_model.grid_pts_xyz,
         vox_key=voxel_model.vox_key[inside_idx],
         iso=sign * iso)

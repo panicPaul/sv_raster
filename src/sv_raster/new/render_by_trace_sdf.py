@@ -182,8 +182,12 @@ if __name__ == "__main__":
     else:
         voxel_model._sh0.data.copy_(
             volume.feature.nan_to_num_()[voxel_model.vox_key].mean(dim=1))
-    voxel_model._geo_grid_pts.data.copy_(
-        volume.tsdf.nan_to_num_())
+    tsdf = volume.tsdf.nan_to_num_()
+    if voxel_model.geo_is_hermite:
+        voxel_model._geo_grid_pts.data.zero_()
+        voxel_model._geo_grid_pts.data[:, :1].copy_(tsdf)
+    else:
+        voxel_model._geo_grid_pts.data.copy_(tsdf)
 
     del volume
     torch.cuda.empty_cache()

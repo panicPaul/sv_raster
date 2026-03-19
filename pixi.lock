@@ -312,6 +312,7 @@ environments:
       - pypi: ./backends/cuda
       - pypi: ./backends/new_cuda
       - pypi: ./backends/new_cuda_cont
+      - pypi: ./backends/new_cuda_spline
   py312-cuda128:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -631,6 +632,7 @@ environments:
       - pypi: ./backends/cuda
       - pypi: ./backends/new_cuda
       - pypi: ./backends/new_cuda_cont
+      - pypi: ./backends/new_cuda_spline
   py312-cuda130:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -949,6 +951,7 @@ environments:
       - pypi: ./backends/cuda
       - pypi: ./backends/new_cuda
       - pypi: ./backends/new_cuda_cont
+      - pypi: ./backends/new_cuda_spline
   py313-cuda128:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -1259,6 +1262,7 @@ environments:
       - pypi: ./backends/cuda
       - pypi: ./backends/new_cuda
       - pypi: ./backends/new_cuda_cont
+      - pypi: ./backends/new_cuda_spline
   py313-cuda130:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -1568,6 +1572,7 @@ environments:
       - pypi: ./backends/cuda
       - pypi: ./backends/new_cuda
       - pypi: ./backends/new_cuda_cont
+      - pypi: ./backends/new_cuda_spline
   py314-cuda128:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -1877,6 +1882,7 @@ environments:
       - pypi: ./backends/cuda
       - pypi: ./backends/new_cuda
       - pypi: ./backends/new_cuda_cont
+      - pypi: ./backends/new_cuda_spline
   py314-cuda130:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
@@ -2185,6 +2191,7 @@ environments:
       - pypi: ./backends/cuda
       - pypi: ./backends/new_cuda
       - pypi: ./backends/new_cuda_cont
+      - pypi: ./backends/new_cuda_spline
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   build_number: 20
@@ -8770,7 +8777,7 @@ packages:
 - pypi: ./
   name: sv-raster
   version: 0.1.0
-  sha256: f4cca20069a22c1326f14f553375b39d297a07c9784885a3154117b57ad80e4c
+  sha256: 6287252fff464eac3472ed17f51e9056d3d1d38dc044416d021c47255cd6ec68
   requires_dist:
   - ruff>=0.15.6,<0.16
   - ty>=0.0.23,<0.0.24
@@ -8826,6 +8833,10 @@ packages:
   name: svraster-cuda-cont
   version: 0.0.0
   sha256: de092182a2f723465163abe07ea6fd55c6f5dfc7e7ff95ca28fb8a9abf858c43
+- pypi: ./backends/new_cuda_spline
+  name: svraster-cuda-spline
+  version: 0.0.0
+  sha256: 45456d7ba745b08029202fa6a938284b834ec0e9bc4582753cde19e43803f78e
 - pypi: https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl
   name: sympy
   version: 1.14.0

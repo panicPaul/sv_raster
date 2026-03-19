@@ -16,6 +16,26 @@ from sv_raster.new.sparse_voxel_gears.adaptive import agg_voxel_into_grid_pts
 
 class SVConstructor:
 
+    @property
+    def _geo_param_dim(self):
+        return 4 if self.geo_is_hermite else 1
+
+    def _alloc_geo_grid_pts(self, geo_init):
+        if self.geo_is_hermite:
+            geo_grid = torch.zeros(
+                [self.num_grid_pts, 4],
+                dtype=torch.float32,
+                device="cuda",
+            )
+            geo_grid[:, 0] = geo_init
+            return geo_grid.requires_grad_()
+        return torch.full(
+            [self.num_grid_pts, 1],
+            geo_init,
+            dtype=torch.float32,
+            device="cuda",
+        ).requires_grad_()
+
     def model_init(self,
                    bounding,           # Scene bound [min_xyz, max_xyz]
                    outside_level,      # Number of Octree levels for background
@@ -74,9 +94,7 @@ class SVConstructor:
         self.active_sh_degree = min(sh_degree_init, self.max_sh_degree)
 
         # Init trainable parameters
-        self._geo_grid_pts = torch.full(
-            [self.num_grid_pts, 1], geo_init,
-            dtype=torch.float32, device="cuda").requires_grad_()
+        self._geo_grid_pts = self._alloc_geo_grid_pts(geo_init)
 
         if self.color_is_grid:
             self._sh0 = torch.full(
@@ -170,9 +188,21 @@ class SVConstructor:
 
         # Setup geometry parameters
         if torch.is_tensor(density):
-            if density.shape == (self.num_grid_pts, 1):
+            if density.shape == (self.num_grid_pts, self._geo_param_dim):
                 self._geo_grid_pts = density.contiguous().cuda()
-            elif density.shape == (self.num_voxels, 8):
+            elif density.shape == (self.num_voxels, 8, self._geo_param_dim):
+                if reduce_density:
+                    self._geo_grid_pts = torch.zeros(
+                        [self.num_grid_pts, self._geo_param_dim], dtype=torch.float32, device="cuda")
+                    self._geo_grid_pts.index_reduce_(
+                        dim=0,
+                        index=self.vox_key.flatten(),
+                        source=density.flatten(0, 1),
+                        reduce="mean",
+                        include_self=False)
+                else:
+                    self.frozen_vox_geo = density.contiguous().cuda()
+            elif (not self.geo_is_hermite) and density.shape == (self.num_voxels, 8):
                 if reduce_density:
                     self._geo_grid_pts = torch.zeros(
                         [self.num_grid_pts, 1], dtype=torch.float32, device="cuda")
@@ -186,11 +216,11 @@ class SVConstructor:
                     self.frozen_vox_geo = density.contiguous().cuda()
             else:
                 raise Exception(f"Unexpected density shape. "
-                                f"It should be either {(self.num_grid_pts,1)} or {(self.num_voxels,8)}")
+                                f"It should be either {(self.num_grid_pts, self._geo_param_dim)} "
+                                f"or {(self.num_voxels, 8, self._geo_param_dim)}"
+                                + ("" if self.geo_is_hermite else f" or {(self.num_voxels, 8)}"))
         else:
-            self._geo_grid_pts = torch.full(
-                [self.num_grid_pts, 1], density,
-                dtype=torch.float32, device="cuda").requires_grad_()
+            self._geo_grid_pts = self._alloc_geo_grid_pts(density)
 
     def ijkl_init(self,
                   scene_center,
@@ -309,14 +339,25 @@ class SVConstructor:
                 include_self=False)
 
         if torch.is_tensor(density):
-            assert density.shape == (len(invmap), 8)
-            new_shape = (len(ijk), 8)
-            density = torch.zeros(new_shape, dtype=torch.float32, device="cuda").index_reduce_(
-                dim=0,
-                index=invmap,
-                source=density,
-                reduce="mean",
-                include_self=False)
+            if self.geo_is_hermite:
+                expected_shape = (len(invmap), 8, self._geo_param_dim)
+                assert density.shape == expected_shape
+                new_shape = (len(ijk), 8, self._geo_param_dim)
+                density = torch.zeros(new_shape, dtype=torch.float32, device="cuda").index_reduce_(
+                    dim=0,
+                    index=invmap,
+                    source=density,
+                    reduce="mean",
+                    include_self=False)
+            else:
+                assert density.shape == (len(invmap), 8)
+                new_shape = (len(ijk), 8)
+                density = torch.zeros(new_shape, dtype=torch.float32, device="cuda").index_reduce_(
+                    dim=0,
+                    index=invmap,
+                    source=density,
+                    reduce="mean",
+                    include_self=False)
 
         # Allocate voxel using ijkl coordinate
         self.ijkl_init(

@@ -159,8 +159,14 @@ class SVAdaptive:
             # The voxel is then subdivided by trilinear interpolation.
             # Finally, we gather voxel values back to the grid_pts.
             ori_vox_grid_pts_val = ori_grid_pts[old_vox_key]
-            subdiv_vox_grid_pts_val = subdivide_by_interp(
-                ori_vox_grid_pts_val[subdivide_idx])
+            if name == '_geo_grid_pts' and self.geo_is_hermite:
+                subdiv_vox_grid_pts_val = subdivide_by_reduced_hermite(
+                    ori_vox_grid_pts_val[subdivide_idx],
+                    self.vox_size[subdivide_idx],
+                )
+            else:
+                subdiv_vox_grid_pts_val = subdivide_by_interp(
+                    ori_vox_grid_pts_val[subdivide_idx])
             new_vox_val = mask_cat_perm(
                 ori_vox_grid_pts_val,
                 kept_idx=kept_idx,
@@ -295,3 +301,114 @@ def subdivide_by_interp(vox_val):
 
     new_vox_val = new_vox_val.reshape(len(vox_val)*8, *vox_val.shape[1:])
     return new_vox_val.contiguous()
+
+
+def hermite_basis_value(t):
+    return (
+        2.0 * t * t * t - 3.0 * t * t + 1.0,
+        -2.0 * t * t * t + 3.0 * t * t,
+    )
+
+
+def hermite_basis_deriv(t):
+    return (
+        t * t * t - 2.0 * t * t + t,
+        t * t * t - t * t,
+    )
+
+
+def hermite_basis_value_grad(t):
+    return (
+        6.0 * t * t - 6.0 * t,
+        -6.0 * t * t + 6.0 * t,
+    )
+
+
+def hermite_basis_deriv_grad(t):
+    return (
+        3.0 * t * t - 4.0 * t + 1.0,
+        3.0 * t * t - 2.0 * t,
+    )
+
+
+def eval_reduced_hermite(vox_val, qx, qy, qz, vox_size):
+    vx = hermite_basis_value(qx)
+    vy = hermite_basis_value(qy)
+    vz = hermite_basis_value(qz)
+    gx = hermite_basis_deriv(qx)
+    gy = hermite_basis_deriv(qy)
+    gz = hermite_basis_deriv(qz)
+
+    dvx = hermite_basis_value_grad(qx)
+    dvy = hermite_basis_value_grad(qy)
+    dvz = hermite_basis_value_grad(qz)
+    dgx = hermite_basis_deriv_grad(qx)
+    dgy = hermite_basis_deriv_grad(qy)
+    dgz = hermite_basis_deriv_grad(qz)
+
+    vox_size = vox_size.squeeze(1)
+    value = torch.zeros([len(vox_val)], dtype=vox_val.dtype, device=vox_val.device)
+    grad = torch.zeros([len(vox_val), 3], dtype=vox_val.dtype, device=vox_val.device)
+
+    for corner_id in range(8):
+        bx = (corner_id >> 2) & 1
+        by = (corner_id >> 1) & 1
+        bz = corner_id & 1
+        rho = vox_val[:, corner_id, 0]
+        drho_dx = vox_val[:, corner_id, 1]
+        drho_dy = vox_val[:, corner_id, 2]
+        drho_dz = vox_val[:, corner_id, 3]
+
+        wx = vx[bx]
+        wy = vy[by]
+        wz = vz[bz]
+        hx = gx[bx]
+        hy = gy[by]
+        hz = gz[bz]
+
+        value = value + (
+            rho * wx * wy * wz
+            + vox_size * drho_dx * hx * wy * wz
+            + vox_size * drho_dy * wx * hy * wz
+            + vox_size * drho_dz * wx * wy * hz
+        )
+
+        grad[:, 0] = grad[:, 0] + (
+            rho * dvx[bx] * wy * wz / vox_size
+            + drho_dx * dgx[bx] * wy * wz
+            + drho_dy * dvx[bx] * hy * wz
+            + drho_dz * dvx[bx] * wy * hz
+        )
+        grad[:, 1] = grad[:, 1] + (
+            rho * wx * dvy[by] * wz / vox_size
+            + drho_dx * hx * dvy[by] * wz
+            + drho_dy * wx * dgy[by] * wz
+            + drho_dz * wx * dvy[by] * hz
+        )
+        grad[:, 2] = grad[:, 2] + (
+            rho * wx * wy * dvz[bz] / vox_size
+            + drho_dx * hx * wy * dvz[bz]
+            + drho_dy * wx * hy * dvz[bz]
+            + drho_dz * wx * wy * dgz[bz]
+        )
+
+    return value, grad
+
+
+def subdivide_by_reduced_hermite(vox_val, vox_size):
+    child_vox_val = torch.empty(
+        [len(vox_val), 8, 8, 4],
+        dtype=vox_val.dtype,
+        device=vox_val.device,
+    )
+    for child_id in range(8):
+        child_bits = ((child_id >> 2) & 1, (child_id >> 1) & 1, child_id & 1)
+        for corner_id in range(8):
+            corner_bits = ((corner_id >> 2) & 1, (corner_id >> 1) & 1, corner_id & 1)
+            qx = 0.5 * (child_bits[0] + corner_bits[0])
+            qy = 0.5 * (child_bits[1] + corner_bits[1])
+            qz = 0.5 * (child_bits[2] + corner_bits[2])
+            value, grad = eval_reduced_hermite(vox_val, qx, qy, qz, vox_size)
+            child_vox_val[:, child_id, corner_id, 0] = value
+            child_vox_val[:, child_id, corner_id, 1:] = grad
+    return child_vox_val.reshape(len(vox_val) * 8, 8, 4).contiguous()

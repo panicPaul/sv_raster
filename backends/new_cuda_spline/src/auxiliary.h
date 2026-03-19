@@ -390,6 +390,73 @@ __forceinline__ __device__ void tri_interp_weight(const float3 qt, float interp_
     interp_w[7] = wx[1] * wy[1] * wz[1];
 }
 
+__forceinline__ __device__ void hermite_value_basis(float t, float basis[2])
+{
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    basis[0] = 2.f * t3 - 3.f * t2 + 1.f;
+    basis[1] = -2.f * t3 + 3.f * t2;
+}
+
+__forceinline__ __device__ void hermite_derivative_basis(float t, float basis[2])
+{
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    basis[0] = t3 - 2.f * t2 + t;
+    basis[1] = t3 - t2;
+}
+
+__forceinline__ __device__ void hermite_value_basis_grad(float t, float basis[2])
+{
+    const float t2 = t * t;
+    basis[0] = 6.f * t2 - 6.f * t;
+    basis[1] = -6.f * t2 + 6.f * t;
+}
+
+__forceinline__ __device__ void hermite_derivative_basis_grad(float t, float basis[2])
+{
+    const float t2 = t * t;
+    basis[0] = 3.f * t2 - 4.f * t + 1.f;
+    basis[1] = 3.f * t2 - 2.f * t;
+}
+
+__forceinline__ __device__ float reduced_hermite_density(
+    const float3 qt,
+    const float vox_l,
+    const float geo_params[32],
+    float grad_w[32])
+{
+    float vx[2], vy[2], vz[2];
+    float gx[2], gy[2], gz[2];
+    hermite_value_basis(qt.x, vx);
+    hermite_value_basis(qt.y, vy);
+    hermite_value_basis(qt.z, vz);
+    hermite_derivative_basis(qt.x, gx);
+    hermite_derivative_basis(qt.y, gy);
+    hermite_derivative_basis(qt.z, gz);
+
+    float density = 0.f;
+    for (int corner_id = 0; corner_id < 8; ++corner_id)
+    {
+        const int bx = (corner_id >> 2) & 1;
+        const int by = (corner_id >> 1) & 1;
+        const int bz = corner_id & 1;
+        const float value_w = vx[bx] * vy[by] * vz[bz];
+        const float grad_x_w = vox_l * gx[bx] * vy[by] * vz[bz];
+        const float grad_y_w = vox_l * vx[bx] * gy[by] * vz[bz];
+        const float grad_z_w = vox_l * vx[bx] * vy[by] * gz[bz];
+        grad_w[corner_id * 4 + 0] = value_w;
+        grad_w[corner_id * 4 + 1] = grad_x_w;
+        grad_w[corner_id * 4 + 2] = grad_y_w;
+        grad_w[corner_id * 4 + 3] = grad_z_w;
+        density += geo_params[corner_id * 4 + 0] * value_w +
+                   geo_params[corner_id * 4 + 1] * grad_x_w +
+                   geo_params[corner_id * 4 + 2] * grad_y_w +
+                   geo_params[corner_id * 4 + 3] * grad_z_w;
+    }
+    return density;
+}
+
 // Debugging helper.
 #define CHECK_CUDA(debug) \
 if(debug) { \

@@ -2,7 +2,7 @@ from functools import lru_cache
 from typing import Literal
 
 
-BackendName = Literal["new_cuda", "new_cuda_cont"]
+BackendName = Literal["new_cuda", "new_cuda_cont", "new_cuda_spline"]
 
 
 @lru_cache(maxsize=None)
@@ -15,6 +15,10 @@ def get_backend_module(backend_name: BackendName = "new_cuda"):
         import svraster_cuda_cont
 
         return svraster_cuda_cont
+    if backend_name == "new_cuda_spline":
+        import svraster_cuda_spline
+
+        return svraster_cuda_spline
     raise ValueError(f"Unknown backend: {backend_name}")
 
 

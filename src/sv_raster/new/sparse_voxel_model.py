@@ -47,6 +47,7 @@ class SparseVoxelModel(SVConstructor, SVProperties, SVRenderer, SVAdaptive, SVIn
         self.black_background = black_background
         self.max_num_levels = max_num_levels if max_num_levels is not None else self.backend.meta.MAX_NUM_LEVELS
         self.color_is_grid = (self.backend_name == "new_cuda_cont")
+        self.geo_is_hermite = (self.backend_name == "new_cuda_spline")
 
         # List the variable names
         self.per_voxel_attr_lst = [

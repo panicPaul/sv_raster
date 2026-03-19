@@ -146,7 +146,7 @@ renderCUDA(
     __shared__ uint2 collected_bbox[BLOCK_SIZE];
     __shared__ float3 collected_vox_c[BLOCK_SIZE];
     __shared__ float collected_vox_l[BLOCK_SIZE];
-    __shared__ float collected_geo_params[BLOCK_SIZE * 8];
+    __shared__ float collected_geo_params[BLOCK_SIZE * 32];
     __shared__ float3 collected_rgb[BLOCK_SIZE];
 
     // In the forward, we stored the final value for T, the
@@ -230,8 +230,8 @@ renderCUDA(
             collected_bbox[thread_id] = bboxes[vox_id];
             collected_vox_c[thread_id] = vox_centers[vox_id];
             collected_vox_l[thread_id] = vox_lengths[vox_id];
-            for (int k=0; k<8; ++k)
-                collected_geo_params[thread_id*8 + k] = geos[vox_id*8 + k];
+            for (int k=0; k<32; ++k)
+                collected_geo_params[thread_id*32 + k] = geos[vox_id*32 + k];
             collected_rgb[thread_id] = rgbs[vox_id];
         }
         block.sync();
@@ -281,15 +281,15 @@ renderCUDA(
             const float b = ab.y;
 
             // Compute closed-form volume integral.
-            float geo_params[8];
-            for (int k=0; k<8; ++k)
-                geo_params[k] = collected_geo_params[j*8 + k];
-            float dL_dgeo_params[8] = {0.f};
+            float geo_params[32];
+            for (int k=0; k<32; ++k)
+                geo_params[k] = collected_geo_params[j*32 + k];
+            float dL_dgeo_params[32] = {0.f};
 
             float vol_int = 0.f;
-            float dI_dgeo_params[8] = {0.f};
-            float each_dI_dgeo_params[n_samp][8];
-            float interp_w[8];
+            float dI_dgeo_params[32] = {0.f};
+            float each_dI_dgeo_params[n_samp][32];
+            float interp_w[32];
             float local_alphas[n_samp];
 
             float vox_l_inv = 1.f / vox_l;
@@ -302,10 +302,7 @@ renderCUDA(
             #pragma unroll
             for (int k=0; k<n_samp; k++, qt=qt+qt_step)
             {
-                tri_interp_weight(qt, interp_w);
-                float d = 0.f;
-                for (int iii=0; iii<8; ++iii)
-                    d += geo_params[iii] * interp_w[iii];
+                const float d = reduced_hermite_density(qt, vox_l, geo_params, interp_w);
                 const float local_vol_int = STEP_SZ_SCALE * step_sz * exp_linear_11(d);
                 vol_int += local_vol_int;
 
@@ -313,7 +310,7 @@ renderCUDA(
                     local_alphas[k] = min(MAX_ALPHA, 1.f - expf(-local_vol_int));
 
                 const float dd_dd = STEP_SZ_SCALE * step_sz * exp_linear_11_bw(d);
-                for (int iii=0; iii<8; ++iii)
+                for (int iii=0; iii<32; ++iii)
                 {
                     float tmp = dd_dd * interp_w[iii];
                     dI_dgeo_params[iii] += tmp;
@@ -367,14 +364,14 @@ renderCUDA(
             {
                 float N_grad_to_geo_params[8];
                 const float lin_nx = (
-                    (geo_params[0b100] + geo_params[0b101] + geo_params[0b110] + geo_params[0b111]) -
-                    (geo_params[0b000] + geo_params[0b001] + geo_params[0b010] + geo_params[0b011]));
+                    (geo_params[0b100 * 4] + geo_params[0b101 * 4] + geo_params[0b110 * 4] + geo_params[0b111 * 4]) -
+                    (geo_params[0b000 * 4] + geo_params[0b001 * 4] + geo_params[0b010 * 4] + geo_params[0b011 * 4]));
                 const float lin_ny = (
-                    (geo_params[0b010] + geo_params[0b011] + geo_params[0b110] + geo_params[0b111]) -
-                    (geo_params[0b000] + geo_params[0b001] + geo_params[0b100] + geo_params[0b101]));
+                    (geo_params[0b010 * 4] + geo_params[0b011 * 4] + geo_params[0b110 * 4] + geo_params[0b111 * 4]) -
+                    (geo_params[0b000 * 4] + geo_params[0b001 * 4] + geo_params[0b100 * 4] + geo_params[0b101 * 4]));
                 const float lin_nz = (
-                    (geo_params[0b001] + geo_params[0b011] + geo_params[0b101] + geo_params[0b111]) -
-                    (geo_params[0b000] + geo_params[0b010] + geo_params[0b100] + geo_params[0b110]));
+                    (geo_params[0b001 * 4] + geo_params[0b011 * 4] + geo_params[0b101 * 4] + geo_params[0b111 * 4]) -
+                    (geo_params[0b000 * 4] + geo_params[0b010 * 4] + geo_params[0b100 * 4] + geo_params[0b110 * 4]));
                 const float3 lin_n = make_float3(lin_nx, lin_ny, lin_nz);
                 const float r_lin = safe_rnorm(lin_n);
                 const float3 surf_n = r_lin * lin_n;
@@ -397,7 +394,7 @@ renderCUDA(
                 N_grad_to_geo_params[0b111] =  +dL_dlin_n.x  +dL_dlin_n.y  +dL_dlin_n.z;
 
                 for (int iii=0; iii<8; ++iii)
-                    dL_dgeo_params[iii] += N_grad_to_geo_params[iii];
+                    dL_dgeo_params[iii * 4] += N_grad_to_geo_params[iii];
             }
 
             // Compute gradient accumulated to the alpha.
@@ -414,7 +411,7 @@ renderCUDA(
             /**************************
             Sum up the gradient from rendering below.
             **************************/
-            for (int iii=0; iii<8; ++iii)
+            for (int iii=0; iii<32; ++iii)
                 dL_dgeo_params[iii] += dL_dI * dI_dgeo_params[iii];
 
             // Gradient from depth
@@ -455,20 +452,20 @@ renderCUDA(
 
                 if (n_samp == 3)
                 {
-                    for (int iii=0; iii<8; ++iii)
+                    for (int iii=0; iii<32; ++iii)
                         dL_dgeo_params[iii] += dLdepth_dI[0] * each_dI_dgeo_params[0][iii] + \
                                             dLdepth_dI[1] * each_dI_dgeo_params[1][iii] + \
                                             dLdepth_dI[2] * each_dI_dgeo_params[2][iii];
                 }
                 else if (n_samp == 2)
                 {
-                    for (int iii=0; iii<8; ++iii)
+                    for (int iii=0; iii<32; ++iii)
                         dL_dgeo_params[iii] += dLdepth_dI[0] * each_dI_dgeo_params[0][iii] + \
                                             dLdepth_dI[1] * each_dI_dgeo_params[1][iii];
                 }
                 else
                 {
-                    for (int iii=0; iii<8; ++iii)
+                    for (int iii=0; iii<32; ++iii)
                         dL_dgeo_params[iii] += dLdepth_dI[0] * dI_dgeo_params[iii];
                 }
             }
@@ -480,20 +477,13 @@ renderCUDA(
                 const float3 pt_b = ro + b * rd;
                 const float3 qt_b = (pt_b - (vox_c - 0.5f * vox_l)) * vox_l_inv;
 
-                float interp_w_a[8], interp_w_b[8];
-                tri_interp_weight(qt_a, interp_w_a);
-                tri_interp_weight(qt_b, interp_w_b);
-
-                float d_a = 0.f, d_b = 0.f;
-                for (int iii=0; iii<8; ++iii)
-                {
-                    d_a += geo_params[iii] * interp_w_a[iii];
-                    d_b += geo_params[iii] * interp_w_b[iii];
-                }
+                float interp_w_a[32], interp_w_b[32];
+                float d_a = reduced_hermite_density(qt_a, vox_l, geo_params, interp_w_a);
+                float d_b = reduced_hermite_density(qt_b, vox_l, geo_params, interp_w_b);
 
                 // L = max(0, d_a - d_b)
                 const float reg_w = weight_ascending * pt_w * static_cast<float>(d_a > d_b);
-                for (int iii=0; iii<8; ++iii)
+                for (int iii=0; iii<32; ++iii)
                     dL_dgeo_params[iii] += reg_w * (interp_w_a[iii] - interp_w_b[iii]);
             }
 
@@ -512,19 +502,20 @@ renderCUDA(
             /**************************
             Write back the gradient below.
             **************************/
-            float grad_pack[12];
+            constexpr int geo_ch = 32;
+            constexpr int pack_ch = geo_ch + 3 + 1;
+            float grad_pack[pack_ch];
             #pragma unroll
-            for (int iii=0; iii<8; ++iii)
+            for (int iii=0; iii<geo_ch; ++iii)
                 grad_pack[iii] = dL_dgeo_params[iii];
-            grad_pack[8] = dL_drgb[0];
-            grad_pack[9] = dL_drgb[1];
-            grad_pack[10] = dL_drgb[2];
-            grad_pack[11] = fabs(dL_dalpha * alpha);
+            grad_pack[geo_ch + 0] = dL_drgb[0];
+            grad_pack[geo_ch + 1] = dL_drgb[1];
+            grad_pack[geo_ch + 2] = dL_drgb[2];
+            grad_pack[geo_ch + 3] = fabs(dL_dalpha * alpha);
 
             const int base_id = cg::this_grid().thread_rank();
-            #pragma unroll
-            for (int iii=0; iii<12; ++iii)
-                atomicAdd(dL_dvox + vox_id * 12 + (base_id+iii)%12, grad_pack[(base_id+iii)%12]);
+            for (int iii=0; iii<pack_ch; ++iii)
+                atomicAdd(dL_dvox + vox_id * pack_ch + (base_id + iii) % pack_ch, grad_pack[(base_id + iii) % pack_ch]);
         }
     }
 }

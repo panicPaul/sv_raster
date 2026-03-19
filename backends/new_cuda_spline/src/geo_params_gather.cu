@@ -19,6 +19,7 @@ namespace cg = cooperative_groups;
 
 namespace GEO_PARAMS_GATHER {
 
+template <int n_dim>
 __global__ void gather_triinterp_geo_params_cuda(
     const int n_care,
     const int64_t* __restrict__ vox_key,
@@ -36,15 +37,18 @@ __global__ void gather_triinterp_geo_params_cuda(
     for(int i=0; i<8; ++i)
         key[i] = vox_key[idx * 8 + i];
 
-    float params[8];
+    float params[8][n_dim];
     for(int i=0; i<8; ++i)
-        params[i] = grid_pts[key[i]];
+        for (int j=0; j<n_dim; ++j)
+            params[i][j] = grid_pts[key[i] * n_dim + j];
 
     // Write to voxel geo param
     for(int i=0; i<8; ++i)
-        geo_params[idx * 8 + i] = params[i];
+        for (int j=0; j<n_dim; ++j)
+            geo_params[idx * 8 * n_dim + i * n_dim + j] = params[i][j];
 }
 
+template <int n_dim>
 __global__ void gather_triinterp_geo_params_bw_cuda(
     const int n_care,
     const int64_t* __restrict__ vox_key,
@@ -62,13 +66,15 @@ __global__ void gather_triinterp_geo_params_bw_cuda(
     for(int i=0; i<8; ++i)
         key[i] = vox_key[idx * 8 + i];
 
-    float dL_dparams[8];
+    float dL_dparams[8][n_dim];
     for(int i=0; i<8; ++i)
-        dL_dparams[i] = dL_dgeo_params[idx * 8 + i];
+        for (int j=0; j<n_dim; ++j)
+            dL_dparams[i][j] = dL_dgeo_params[idx * 8 * n_dim + i * n_dim + j];
 
     // Write to voxel geo param
     for(int i=0; i<8; ++i)
-        atomicAdd(dL_dgrid_pts + key[i], dL_dparams[i]);
+        for (int j=0; j<n_dim; ++j)
+            atomicAdd(dL_dgrid_pts + key[i] * n_dim + j, dL_dparams[i][j]);
 }
 
 template <int n_dim>
@@ -138,10 +144,14 @@ torch::Tensor gather_triinterp_geo_params(
 {
     const int n_vox = vox_key.size(0);
     const int n_care = care_idx.size(0);
-    torch::Tensor geo_params = torch::empty({n_vox, 8}, grid_pts.options());
+    const int n_dim = grid_pts.size(1);
+    torch::Tensor geo_params = torch::empty({n_vox, 8, n_dim}, grid_pts.options());
+
+    if (n_dim != 4)
+        AT_ERROR("Only support n_dim=4 for spline geo params.");
 
     if (n_care > 0)
-        gather_triinterp_geo_params_cuda <<<(n_care + 255) / 256, 256>>> (
+        gather_triinterp_geo_params_cuda<4> <<<(n_care + 255) / 256, 256>>> (
             n_care,
             vox_key.contiguous().data_ptr<int64_t>(),
             care_idx.contiguous().data_ptr<int64_t>(),
@@ -159,10 +169,14 @@ torch::Tensor gather_triinterp_geo_params_bw(
 {
     const int n_vox = vox_key.size(0);
     const int n_care = care_idx.size(0);
-    torch::Tensor dL_dgrid_pts = torch::zeros({num_grid_pts, 1}, dL_dgeo_params.options());
+    const int n_dim = dL_dgeo_params.size(2);
+    torch::Tensor dL_dgrid_pts = torch::zeros({num_grid_pts, n_dim}, dL_dgeo_params.options());
+
+    if (n_dim != 4)
+        AT_ERROR("Only support n_dim=4 for spline geo params.");
 
     if (n_care > 0)
-        gather_triinterp_geo_params_bw_cuda <<<(n_care + 255) / 256, 256>>> (
+        gather_triinterp_geo_params_bw_cuda<4> <<<(n_care + 255) / 256, 256>>> (
             n_care,
             vox_key.contiguous().data_ptr<int64_t>(),
             care_idx.contiguous().data_ptr<int64_t>(),

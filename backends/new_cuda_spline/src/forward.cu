@@ -136,7 +136,7 @@ renderCUDA(
     __shared__ uint2 collected_bbox[BLOCK_SIZE];
     __shared__ float3 collected_vox_c[BLOCK_SIZE];
     __shared__ float collected_vox_l[BLOCK_SIZE];
-    __shared__ float collected_geo_params[BLOCK_SIZE * 8];
+    __shared__ float collected_geo_params[BLOCK_SIZE * 32];
     __shared__ float3 collected_rgb[BLOCK_SIZE];
 
     // Initialize helper variables.
@@ -172,8 +172,8 @@ renderCUDA(
             collected_bbox[thread_id] = bboxes[vox_id];
             collected_vox_c[thread_id] = vox_centers[vox_id];
             collected_vox_l[thread_id] = vox_lengths[vox_id];
-            for (int k=0; k<8; ++k)
-                collected_geo_params[thread_id*8 + k] = geos[vox_id*8 + k];
+            for (int k=0; k<32; ++k)
+                collected_geo_params[thread_id*32 + k] = geos[vox_id*32 + k];
             collected_rgb[thread_id] = rgbs[vox_id];
         }
         block.sync();
@@ -217,13 +217,13 @@ renderCUDA(
             const float a = ab.x;
             const float b = ab.y;
 
-            float geo_params[8];
-            for (int k=0; k<8; ++k)
-                geo_params[k] = collected_geo_params[j*8 + k];
+            float geo_params[32];
+            for (int k=0; k<32; ++k)
+                geo_params[k] = collected_geo_params[j*32 + k];
 
             // Compute volume density
             float vol_int = 0.f;
-            float interp_w[8];
+            float interp_w[32];
             float local_alphas[n_samp];
 
             // Quadrature integral from trilinear sampling.
@@ -237,10 +237,7 @@ renderCUDA(
             #pragma unroll
             for (int k=0; k<n_samp; k++, qt=qt+qt_step)
             {
-                tri_interp_weight(qt, interp_w);
-                float d = 0.f;
-                for (int iii=0; iii<8; ++iii)
-                    d += geo_params[iii] * interp_w[iii];
+                const float d = reduced_hermite_density(qt, vox_l, geo_params, interp_w);
 
                 const float local_vol_int = STEP_SZ_SCALE * step_sz * exp_linear_11(d);
                 vol_int += local_vol_int;
@@ -301,14 +298,14 @@ renderCUDA(
             if (need_normal)
             {
                 const float lin_nx = (
-                    (geo_params[0b100] + geo_params[0b101] + geo_params[0b110] + geo_params[0b111]) -
-                    (geo_params[0b000] + geo_params[0b001] + geo_params[0b010] + geo_params[0b011]));
+                    (geo_params[0b100 * 4] + geo_params[0b101 * 4] + geo_params[0b110 * 4] + geo_params[0b111 * 4]) -
+                    (geo_params[0b000 * 4] + geo_params[0b001 * 4] + geo_params[0b010 * 4] + geo_params[0b011 * 4]));
                 const float lin_ny = (
-                    (geo_params[0b010] + geo_params[0b011] + geo_params[0b110] + geo_params[0b111]) -
-                    (geo_params[0b000] + geo_params[0b001] + geo_params[0b100] + geo_params[0b101]));
+                    (geo_params[0b010 * 4] + geo_params[0b011 * 4] + geo_params[0b110 * 4] + geo_params[0b111 * 4]) -
+                    (geo_params[0b000 * 4] + geo_params[0b001 * 4] + geo_params[0b100 * 4] + geo_params[0b101 * 4]));
                 const float lin_nz = (
-                    (geo_params[0b001] + geo_params[0b011] + geo_params[0b101] + geo_params[0b111]) -
-                    (geo_params[0b000] + geo_params[0b010] + geo_params[0b100] + geo_params[0b110]));
+                    (geo_params[0b001 * 4] + geo_params[0b011 * 4] + geo_params[0b101 * 4] + geo_params[0b111 * 4]) -
+                    (geo_params[0b000 * 4] + geo_params[0b010 * 4] + geo_params[0b100 * 4] + geo_params[0b110 * 4]));
                 const float3 lin_n = make_float3(lin_nx, lin_ny, lin_nz);
                 const float r_lin = safe_rnorm(lin_n);
                 N = N + pt_w * r_lin * lin_n;
@@ -334,9 +331,9 @@ renderCUDA(
 
         float3 vox_c = vox_centers[D_med_vox_id];
         float vox_l = vox_lengths[D_med_vox_id];
-        float geo_params[8];
-        for (int k=0; k<8; ++k)
-            geo_params[k] = geos[D_med_vox_id*8 + k];
+        float geo_params[32];
+        for (int k=0; k<32; ++k)
+            geo_params[k] = geos[D_med_vox_id*32 + k];
         const float2 ab = ray_aabb(vox_c, vox_l, ro, rd_inv);
         const float a = ab.x;
         const float b = ab.y;
@@ -353,11 +350,8 @@ renderCUDA(
         {
             D_med += step_sz;
 
-            float interp_w[8];
-            tri_interp_weight(qt, interp_w);
-            float d = 0.f;
-            for (int iii=0; iii<8; ++iii)
-                d += geo_params[iii] * interp_w[iii];
+            float interp_w[32];
+            const float d = reduced_hermite_density(qt, vox_l, geo_params, interp_w);
 
             const float vol_int = STEP_SZ_SCALE * step_sz * exp_linear_11(d);
 
@@ -673,7 +667,7 @@ int rasterize_voxels_procedure(
     if (use_wide_sort_key && !printed_wide_sort_key_notice)
     {
         std::printf(
-            "[new_cuda] Render resolution requires 128-bit raster sort keys "
+            "[new_cuda_spline] Render resolution requires 128-bit raster sort keys "
             "(tile_count=%u, key_bits=%d).\n",
             tile_count,
             total_key_bits);

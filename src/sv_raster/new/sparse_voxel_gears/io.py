@@ -22,6 +22,7 @@ class SVInOut:
         state_dict = {
             'backend_name': self.backend_name,
             'color_layout': 'mixed' if self.color_is_grid else 'voxel',
+            'geo_layout': 'reduced_hermite_v1' if self.geo_is_hermite else 'trilinear',
             'active_sh_degree': self.active_sh_degree,
             'scene_center': self.scene_center.data.contiguous(),
             'inside_extent': self.inside_extent.data.contiguous(),
@@ -53,11 +54,17 @@ class SVInOut:
         state_dict = torch.load(path, map_location="cpu", weights_only=False)
         state_backend = state_dict.get('backend_name')
         state_color_layout = state_dict.get('color_layout')
+        state_geo_layout = state_dict.get('geo_layout')
 
         if self.backend_name == "new_cuda_cont":
             if state_backend != "new_cuda_cont" or state_color_layout != "mixed":
                 raise RuntimeError(
                     "This checkpoint does not use the new continuous-color new_cuda_cont format."
+                )
+        elif self.backend_name == "new_cuda_spline":
+            if state_backend != "new_cuda_spline" or state_geo_layout != "reduced_hermite_v1":
+                raise RuntimeError(
+                    "This checkpoint does not use the reduced-Hermite new_cuda_spline format."
                 )
         elif state_backend not in (None, "new_cuda"):
             raise RuntimeError(

@@ -90,8 +90,8 @@ def rasterize_voxels(
     subdiv_p = vox_params['subdiv_p']
 
     # Some voxel parameters checking
-    if geos.shape != (N, 8):
-        raise Exception(f"Expect geos in ({N}, 8) but got", geos.shape)
+    if geos.shape != (N, 8, 4):
+        raise Exception(f"Expect geos in ({N}, 8, 4) but got", geos.shape)
     if rgbs.shape[0] != N:
         raise Exception(f"Expect rgbs in ({N}, 3) but got", rgbs.shape)
     if subdiv_p.shape[0] != N:
@@ -121,7 +121,7 @@ def rasterize_voxels(
         octree_paths,
         vox_centers,
         vox_lengths,
-        geos,
+        geos.flatten(1, 2),
         rgbs,
         subdiv_p,
     )
@@ -233,6 +233,7 @@ class _RasterizeVoxels(torch.autograd.Function):
         )
 
         dL_dgeos, dL_drgbs, subdiv_p_bw = _C.rasterize_voxels_backward(*args)
+        dL_dgeos = dL_dgeos.reshape_as(geos)
 
         grads = (
             None, # => raster_settings
@@ -326,11 +327,11 @@ class GatherGeoParams(torch.autograd.Function):
     ):
         assert len(vox_key.shape) == 2 and vox_key.shape[1] == 8
         assert len(care_idx.shape) == 1
-        assert grid_pts.shape[0] == grid_pts.numel()
+        assert len(grid_pts.shape) == 2 and grid_pts.shape[1] == 4
 
         geo_params = _C.gather_triinterp_geo_params(vox_key, care_idx, grid_pts)
 
-        ctx.num_grid_pts = grid_pts.numel()
+        ctx.num_grid_pts = len(grid_pts)
         ctx.save_for_backward(vox_key, care_idx)
         return geo_params
 
