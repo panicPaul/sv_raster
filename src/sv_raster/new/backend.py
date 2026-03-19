@@ -2,7 +2,7 @@ from functools import lru_cache
 from typing import Literal
 
 
-BackendName = Literal["new_cuda", "new_cuda_cont", "new_cuda_spline"]
+BackendName = Literal["new_cuda", "new_cuda_aa", "new_cuda_cont", "new_cuda_spline"]
 
 
 @lru_cache(maxsize=None)
@@ -11,6 +11,10 @@ def get_backend_module(backend_name: BackendName = "new_cuda"):
         import new_svraster_cuda
 
         return new_svraster_cuda
+    if backend_name == "new_cuda_aa":
+        import svraster_cuda_aa
+
+        return svraster_cuda_aa
     if backend_name == "new_cuda_cont":
         import svraster_cuda_cont
 

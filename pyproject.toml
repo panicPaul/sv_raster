@@ -36,7 +36,7 @@ dependencies = [
     "pydantic>=2.12.5,<3",
     "pyyaml>=6.0.3,<7",
     "tyro>=1.0.10,<2",
-    "pydantic-yaml>=1.6.0,<2",
+    "pydantic-yaml>=1.6.0,<2", "slangpy>=0.30.0,<0.31",
     # TODO: find replacement for open3d, gpytoolbox (maybe just fork and update cmake version?)
 ]
 
@@ -53,8 +53,10 @@ no-build-isolation-package = ["fused-ssim"]
 fused-ssim = { git = "https://github.com/rahul-goel/fused-ssim" }
 svraster_cuda = { path = "backends/cuda" }
 new_svraster_cuda = { path = "backends/new_cuda" }
+svraster_cuda_aa = { path = "backends/new_cuda_aa" }
 svraster_cuda_cont  = { path = "backends/new_cuda_cont" }
 svraster_cuda_spline = { path = "backends/new_cuda_spline" }
+
 
 
 [tool.uv.extra-build-dependencies]
@@ -69,6 +71,7 @@ platforms = ["linux-64"]
 sv_raster = { path = ".", editable = true }
 svraster_cuda = { path = "backends/cuda", editable = false } # use pixi reinstall for re-compilation
 new_svraster_cuda = { path = "backends/new_cuda", editable = false } # use pixi reinstall for re-compilation
+svraster_cuda_aa = { path = "backends/new_cuda_aa", editable = false } # use pixi reinstall for re-compilation
 svraster_cuda_cont = { path = "backends/new_cuda_cont", editable = false } # use pixi reinstall for re-compilation
 svraster_cuda_spline = { path = "backends/new_cuda_spline", editable = false } # use pixi reinstall for re-compilation
 
@@ -81,8 +84,8 @@ no-build-isolation = ["fused-ssim"] # does not seem to be the same as uv's isola
 python = "3.12.*"
 [tool.pixi.feature.py313.dependencies]
 python = "3.13.*"
-[tool.pixi.feature.py314.dependencies]
-python = "3.14.*"
+# [tool.pixi.feature.py314.dependencies]
+# python = "3.14.*"
 
 # --- CUDA version features ---
 [tool.pixi.feature.cuda128.dependencies]
@@ -111,14 +114,14 @@ extra-index-urls = ["https://download.pytorch.org/whl/cu130"]
 
 # --- Environments (compose Python × CUDA) ---
 [tool.pixi.environments]
-default = ["py314", "cuda130"]
+default = ["py313", "cuda130"]
 py312-cuda128 = ["py312", "cuda128"]
 py313-cuda128 = ["py313", "cuda128"]
-py314-cuda128 = ["py314", "cuda128"]
+# py314-cuda128 = ["py314", "cuda128"]
 
 py312-cuda130 = ["py312", "cuda130"]
 py313-cuda130 = ["py313", "cuda130"]
-py314-cuda130 = ["py314", "cuda130"]
+# py314-cuda130 = ["py314", "cuda130"]
 
 # --- Pixi Dependencies ---
 [tool.pixi.dependencies]

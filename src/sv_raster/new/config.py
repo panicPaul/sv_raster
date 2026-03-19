@@ -132,8 +132,8 @@ class RegularizerConfig(BaseModel):
     lambda_T_inside: float = 0.0
     # Weight of the per-point RGB concentration loss in the rasterizer backward pass.
     lambda_R_concen: float = 0.01
-    # Weight of the ascending regularizer in the rasterizer backward pass.
 
+    # Weight of the ascending regularizer in the rasterizer backward pass.
     lambda_ascending: float = 0.0
     # First iteration where ascending regularization is enabled.
     ascending_from: int = 0
@@ -167,8 +167,8 @@ class RegularizerConfig(BaseModel):
     tv_from: int = 0
     # Last iteration where TV density regularization is enabled.
     tv_until: int = 10000
-    # Upper bound for random supersampling augmentation after iteration 1000.
 
+    # Upper bound for random supersampling augmentation after iteration 1000.
     ss_aug_max: float = 1.5
     # If true, training renders use a random background color.
     rand_bg: bool = False
@@ -236,6 +236,36 @@ class AutoExposureConfig(BaseModel):
     auto_exposure_upd_ckpt: list[int] = [5000, 10000, 15000]
 
 
+class CoarseToFineScheduleLevelConfig(BaseModel):
+    # First max occupied octree level where this temporary image downscale becomes active.
+    min_level: int
+    # Shared image-supervision downscale applied to all image-based losses at and above `min_level`.
+    downscale: float
+
+
+class CoarseToFineScheduleConfig(BaseModel):
+    # Enables progressive temporary downscaling for all image-based supervision.
+    enabled: bool = False
+    # Ordered level-to-downscale schedule shared by RGB, SSIM, mask, and raster-side GT color terms.
+    levels: list[CoarseToFineScheduleLevelConfig] = Field(default_factory=lambda: [
+        CoarseToFineScheduleLevelConfig(min_level=11, downscale=8.0),
+        CoarseToFineScheduleLevelConfig(min_level=12, downscale=4.0),
+        CoarseToFineScheduleLevelConfig(min_level=13, downscale=2.0),
+        CoarseToFineScheduleLevelConfig(min_level=14, downscale=1.0),
+    ])
+
+    @model_validator(mode="after")
+    def validate_levels(self):
+        prev_min_level = None
+        for level_cfg in self.levels:
+            if level_cfg.downscale < 1.0:
+                raise ValueError("coarse_to_fine_schedule downscale values must be >= 1.0")
+            if prev_min_level is not None and level_cfg.min_level <= prev_min_level:
+                raise ValueError("coarse_to_fine_schedule.levels must be strictly increasing in min_level")
+            prev_min_level = level_cfg.min_level
+        return self
+
+
 class Config(BaseModel):
     # Model and renderer hyperparameters.
     model: ModelConfig = Field(default_factory=ModelConfig)
@@ -253,6 +283,8 @@ class Config(BaseModel):
     procedure: ProcedureConfig = Field(default_factory=ProcedureConfig)
     # Per-camera exposure fitting settings.
     auto_exposure: AutoExposureConfig = Field(default_factory=AutoExposureConfig)
+    # Shared temporary image resolution used by all image-based losses during training.
+    coarse_to_fine_schedule: CoarseToFineScheduleConfig = Field(default_factory=CoarseToFineScheduleConfig)
 
 
 def load_config(cfg_file: str | Path) -> Config:

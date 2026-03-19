@@ -173,7 +173,7 @@ class SVRenderer:
         w_src, h_src = camera.image_width, camera.image_height
         w, h = round(w_src * ss), round(h_src * ss)
         w_ss, h_ss = w / w_src, h / h_src
-        if ss != 1.0 and 'gt_color' in other_opt:
+        if 'gt_color' in other_opt and other_opt['gt_color'].shape[-2:] != (h, w):
             other_opt['gt_color'] = resize_rendering(other_opt['gt_color'], size=(h, w))
 
         n_samp_per_vox = other_opt.pop('n_samp_per_vox', self.n_samp_per_vox)
@@ -198,12 +198,17 @@ class SVRenderer:
             need_normal=output_normal,
             track_max_w=track_max_w,
             **other_opt)
+        rasterize_kwargs = {}
+        if self.backend_name == "new_cuda_aa":
+            rasterize_kwargs["octlevels"] = self.octlevel
+
         color, depth, normal, T, max_w = self.backend.renderer.rasterize_voxels(
             raster_settings,
             self.octpath,
             self.vox_center,
             self.vox_size,
-            self.vox_fn)
+            self.vox_fn,
+            **rasterize_kwargs)
 
         ###################################
         # Post-processing and pack output

@@ -1,16 +1,17 @@
 #!/bin/bash
 DATA_PATH=/home/schlack/Documents/3DGS_scenes/360/counter
-OUTPUT_PATH=checkpoints/debug/full_res_no_ss_l18/counter
+OUTPUT_PATH=checkpoints/debug/half_res_ss/counter
 # CONFIG=cfg/mipnerf360.yaml
 CONFIG=cfg/mipnerf360_fast_train.yaml
 
 python -m sv_raster.new.train \
-    --data.eval \
-    --data.source_path $DATA_PATH \
     --model_path $OUTPUT_PATH \
-    --data.res_downscale 1 \
-    --cfg_file $CONFIG \
-    --model.max_num_levels 18 \
-    --model.backend new_cuda \
-    --model.ss  1.0 \
-    --regularizer.ss_aug_max  1.0
+    --cfg.data.eval \
+    --cfg.data.source-path $DATA_PATH \
+    --cfg.data.res-downscale 1 \
+    --cfg-file $CONFIG \
+    --cfg.model.max-num-levels 18 \
+    --cfg.model.backend new_cuda \
+    --cfg.regularizer.lambda-normal-dmean 0.001 \
+    --cfg.regularizer.lambda-normal-dmed 0.001 \
+    --cfg.coarse-to-fine-schedule.enabled

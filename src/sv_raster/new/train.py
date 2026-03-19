@@ -22,15 +22,9 @@ import torch
 import tyro
 
 from sv_raster.new.config import (
-    AutoExposureConfig,
-    BoundingConfig,
+    CoarseToFineScheduleConfig,
     Config,
     DataConfig,
-    InitConfig,
-    ModelConfig,
-    OptimizerConfig,
-    ProcedureConfig,
-    RegularizerConfig,
     dump_config,
     load_config,
     load_config_override,
@@ -38,13 +32,42 @@ from sv_raster.new.config import (
 from sv_raster.new.backend import get_backend_module
 
 from sv_raster.new.utils.system_utils import seed_everything
-from sv_raster.new.utils.image_utils import im_tensor2np, viz_tensordepth
+from sv_raster.new.utils.image_utils import im_tensor2np, resize_rendering, viz_tensordepth
 from sv_raster.new.utils.bounding_utils import decide_main_bounding
 from sv_raster.new.utils import mono_utils
 from sv_raster.new.utils import loss_utils
 
 from sv_raster.new.dataloader.data_pack import DataPack, compute_iter_idx
 from sv_raster.new.sparse_voxel_model import SparseVoxelModel
+
+
+def resolve_image_loss_downscale(
+    cfg: CoarseToFineScheduleConfig,
+    current_level: int,
+) -> float:
+    if not cfg.enabled or len(cfg.levels) == 0:
+        return 1.0
+
+    downscale = cfg.levels[0].downscale
+    for level_cfg in cfg.levels:
+        if current_level >= level_cfg.min_level:
+            downscale = level_cfg.downscale
+        else:
+            break
+    return downscale
+
+
+def resize_for_image_loss(
+    image: torch.Tensor,
+    downscale: float,
+) -> torch.Tensor:
+    if downscale <= 1.0:
+        return image.detach()
+
+    height, width = image.shape[-2:]
+    target_h = max(1, round(height / downscale))
+    target_w = max(1, round(width / downscale))
+    return resize_rendering(image, size=(target_h, target_w)).detach()
 
 
 def training(args, cfg: Config):
@@ -237,23 +260,41 @@ def training(args, cfg: Config):
 
         # Pick a Camera
         cam = tr_cams[tr_cam_indices[iteration-1]]
+        current_level = int(voxel_model.octlevel.max().item())
+        image_loss_downscale = resolve_image_loss_downscale(
+            cfg.coarse_to_fine_schedule,
+            current_level,
+        )
 
         # Get gt image
         gt_image = cam.image.cuda()
+        with torch.no_grad():
+            image_loss_gt = resize_for_image_loss(gt_image, image_loss_downscale)
+
         if cfg.regularizer.lambda_R_concen > 0:
-            tr_render_opt['gt_color'] = gt_image
+            tr_render_opt['gt_color'] = image_loss_gt
+        elif 'gt_color' in tr_render_opt:
+            tr_render_opt.pop('gt_color')
 
         # Render
         render_pkg = voxel_model.render(cam, **tr_render_opt)
         render_image = render_pkg['color']
+        if render_image.shape[-2:] != image_loss_gt.shape[-2:]:
+            render_image_for_loss = resize_rendering(render_image, size=image_loss_gt.shape[-2:])
+        else:
+            render_image_for_loss = render_image
 
         # Loss
-        mse = loss_utils.l2_loss(render_image, gt_image)
+        mse = loss_utils.l2_loss(render_image_for_loss, image_loss_gt)
 
         if cfg.regularizer.use_l1:
-            photo_loss = loss_utils.l1_loss(render_image, gt_image)
+            photo_loss = loss_utils.l1_loss(render_image_for_loss, image_loss_gt)
         elif cfg.regularizer.use_huber:
-            photo_loss = loss_utils.huber_loss(render_image, gt_image, cfg.regularizer.huber_thres)
+            photo_loss = loss_utils.huber_loss(
+                render_image_for_loss,
+                image_loss_gt,
+                cfg.regularizer.huber_thres,
+            )
         else:
             photo_loss = mse
         loss = cfg.regularizer.lambda_photo * photo_loss
@@ -263,7 +304,12 @@ def training(args, cfg: Config):
 
         if cfg.regularizer.lambda_mask:
             gt_T = 1 - cam.mask.cuda()
-            loss += cfg.regularizer.lambda_mask * loss_utils.l2_loss(render_pkg['T'], gt_T)
+            with torch.no_grad():
+                image_loss_gt_T = resize_for_image_loss(gt_T, image_loss_downscale)
+            render_T = render_pkg['T']
+            if render_T.shape[-2:] != image_loss_gt_T.shape[-2:]:
+                render_T = resize_rendering(render_T, size=image_loss_gt_T.shape[-2:])
+            loss += cfg.regularizer.lambda_mask * loss_utils.l2_loss(render_T, image_loss_gt_T)
 
         if need_depthanythingv2:
             loss += cfg.regularizer.lambda_depthanythingv2 * depthanythingv2_loss(cam, render_pkg, iteration)
@@ -272,7 +318,10 @@ def training(args, cfg: Config):
             loss += cfg.regularizer.lambda_mast3r_metric_depth * mast3r_metric_depth_loss(cam, render_pkg, iteration)
 
         if cfg.regularizer.lambda_ssim:
-            loss += cfg.regularizer.lambda_ssim * loss_utils.fast_ssim_loss(render_image, gt_image)
+            loss += cfg.regularizer.lambda_ssim * loss_utils.fast_ssim_loss(
+                render_image_for_loss,
+                image_loss_gt,
+            )
         if cfg.regularizer.lambda_T_concen:
             loss += cfg.regularizer.lambda_T_concen * loss_utils.prob_concen_loss(render_pkg[f'raw_T'])
         if cfg.regularizer.lambda_T_inside:
@@ -406,13 +455,14 @@ def training(args, cfg: Config):
             ema_loss_for_log += ema_p * (loss - ema_loss_for_log)
             ema_psnr_for_log += ema_p * (psnr - ema_psnr_for_log)
             if iteration % 10 == 0:
-                current_level = int(voxel_model.octlevel.max().item())
                 pb_text = {
                     "Loss": f"{ema_loss_for_log:.5f}",
                     "psnr": f"{ema_psnr_for_log:.2f}",
                     "level": f"{current_level}/{voxel_model.max_num_levels}",
                     "vox": f"{voxel_model.num_voxels:.2e}",
                 }
+                if image_loss_downscale > 1.0:
+                    pb_text["img"] = f"1/{image_loss_downscale:g}"
                 progress_bar.set_postfix(pb_text)
                 progress_bar.update(10)
             if iteration == cfg.procedure.n_iter:
@@ -580,14 +630,7 @@ class TrainCliArgs:
     load_optimizer: bool = False
     save_optimizer: bool = False
     save_quantized: bool = False
-    model: ModelConfig = field(default_factory=ModelConfig)
-    data: DataConfig = field(default_factory=DataConfig.model_construct)
-    bounding: BoundingConfig = field(default_factory=BoundingConfig)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    regularizer: RegularizerConfig = field(default_factory=RegularizerConfig)
-    init: InitConfig = field(default_factory=InitConfig)
-    procedure: ProcedureConfig = field(default_factory=ProcedureConfig)
-    auto_exposure: AutoExposureConfig = field(default_factory=AutoExposureConfig)
+    cfg: Config = field(default_factory=lambda: Config(data=DataConfig.model_construct()))
 
 
 @dataclass
@@ -613,55 +656,37 @@ def parse_cfg_file_arg(argv: list[str]) -> Path | None:
     return None
 
 
+def recursive_update(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = recursive_update(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def build_cli_defaults(cfg_file: Path | None) -> TrainCliArgs:
     defaults = TrainCliArgs()
     if cfg_file is None:
         return defaults
 
     override = load_config_override(cfg_file)
-    section_defaults = {
-        "model": defaults.model,
-        "data": defaults.data,
-        "bounding": defaults.bounding,
-        "optimizer": defaults.optimizer,
-        "regularizer": defaults.regularizer,
-        "init": defaults.init,
-        "procedure": defaults.procedure,
-        "auto_exposure": defaults.auto_exposure,
-    }
-    for section_name, section_default in section_defaults.items():
-        if section_name not in override:
-            continue
-        section_override = override.pop(section_name)
-        if not isinstance(section_override, dict):
-            raise TypeError(f"Config override section '{section_name}' must be a mapping.")
-        section_data = section_default.model_dump(mode="python", exclude_unset=True)
-        section_data.update(section_override)
-        if section_name == "data" and "source_path" not in section_data:
-            updated_section = type(section_default).model_construct(**section_data)
-        else:
-            updated_section = type(section_default).model_validate(section_data)
-        setattr(defaults, section_name, updated_section)
+    unknown_keys = sorted(set(override) - set(Config.model_fields))
+    if unknown_keys:
+        raise KeyError(f"Unknown config override section(s): {', '.join(unknown_keys)}")
 
-    if override:
-        unknown_keys = ", ".join(sorted(override.keys()))
-        raise KeyError(f"Unknown config override section(s): {unknown_keys}")
-
+    base_cfg = defaults.cfg.model_dump(mode="python", exclude_unset=True)
+    merged_cfg = recursive_update(base_cfg, override)
+    if "data" in merged_cfg and isinstance(merged_cfg["data"], dict) and "source_path" not in merged_cfg["data"]:
+        merged_cfg["data"] = DataConfig.model_construct(**merged_cfg["data"])
+    defaults.cfg = Config.model_validate(merged_cfg)
     defaults.cfg_file = cfg_file
     return defaults
 
 
 def build_config(args: TrainCliArgs) -> Config:
-    return Config.model_validate({
-        "model": args.model.model_dump(mode="python"),
-        "data": args.data.model_dump(mode="python"),
-        "bounding": args.bounding.model_dump(mode="python"),
-        "optimizer": args.optimizer.model_dump(mode="python"),
-        "regularizer": args.regularizer.model_dump(mode="python"),
-        "init": args.init.model_dump(mode="python"),
-        "procedure": args.procedure.model_dump(mode="python"),
-        "auto_exposure": args.auto_exposure.model_dump(mode="python"),
-    })
+    return Config.model_validate(args.cfg.model_dump(mode="python"))
 
 
 def apply_schedule_multiplier(cfg: Config) -> Config:
