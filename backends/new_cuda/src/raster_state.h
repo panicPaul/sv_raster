@@ -22,10 +22,10 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #ifndef RASTER_STATE_H_INCLUDED
 #define RASTER_STATE_H_INCLUDED
 
-#include "auxiliary.h"
-
 #include <cuda_runtime.h>
 #include <torch/extension.h>
+
+#include "auxiliary.h"
 
 namespace RASTER_STATE {
 
