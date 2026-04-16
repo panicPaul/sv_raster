@@ -1,3 +1,15 @@
 [build-system]
-requires = ["setuptools", "torch"]
-build-backend = "setuptools.build_meta:__legacy__"
+requires = ["setuptools>=68", "wheel", "torch"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "new-svraster-cuda"
+version = "0.0.0"
+description = "CUDA extension backend for SV Raster."
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+]
+
+[tool.setuptools]
+packages = ["new_svraster_cuda"]
